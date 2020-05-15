@@ -57,6 +57,15 @@ fn main() -> io::Result<()> {
 		panic!("Failed creating \"{}\": {}.", OUTPUT_PATH, e)
 	});
 
+	fn write_to_output(
+		output_buf: &mut io::BufWriter<&mut Vec<u8>>,
+		data: &[u8],
+	) {
+		output_buf.write(data).unwrap_or_else(|e| {
+			panic!("Failed writing \"<html>\" to to buffer: {}.", e)
+		});
+	}
+
 	for input_file_name in markdown_files {
 		let input_file =
 			fs::read_to_string(&input_file_name).unwrap_or_else(|e| {
@@ -67,18 +76,6 @@ fn main() -> io::Result<()> {
 				)
 			});
 
-		let parser = Parser::new(input_file.as_str());
-		let mut output = Vec::new();
-		let mut output_buf = io::BufWriter::new(&mut output);
-		html::write_html(&mut output_buf, parser).unwrap_or_else(|e| {
-			panic!(
-				"Failed converting Markdown file \"{}\" to HTML: {}.",
-				&input_file_name.display(),
-				e
-			)
-		});
-
-		let mut output_file_name = String::from(OUTPUT_PATH);
 		let input_file_name_str =
 			input_file_name.to_str().unwrap_or_else(|| {
 				panic!(
@@ -86,6 +83,40 @@ fn main() -> io::Result<()> {
 					&input_file_name.display()
 				)
 			});
+
+		let parser = Parser::new(input_file.as_str());
+		let mut output = Vec::new();
+		let mut output_buf = io::BufWriter::new(&mut output);
+		write_to_output(
+			&mut output_buf,
+			b"<html>
+<head><title>",
+		);
+		write_to_output(
+			&mut output_buf,
+			input_file_name_str
+				[INPUT_PATH.len() + 1..input_file_name_str.len() - 3]
+				.as_bytes(),
+		);
+		write_to_output(
+			&mut output_buf,
+			b"</title></head>
+<body>",
+		);
+		html::write_html(&mut output_buf, parser).unwrap_or_else(|e| {
+			panic!(
+				"Failed converting Markdown file \"{}\" to HTML: {}.",
+				&input_file_name.display(),
+				e
+			)
+		});
+		write_to_output(
+			&mut output_buf,
+			b"</body>
+</html>",
+		);
+
+		let mut output_file_name = String::from(OUTPUT_PATH);
 		output_file_name.push_str(
 			&input_file_name_str
 				[INPUT_PATH.len()..(input_file_name_str.len() - "md".len())],
