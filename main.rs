@@ -92,12 +92,10 @@ fn main() -> io::Result<()> {
 			b"<html>
 <head><title>",
 		);
-		write_to_output(
-			&mut output_buf,
-			input_file_name_str
-				[INPUT_PATH.len() + 1..input_file_name_str.len() - 3]
-				.as_bytes(),
-		);
+		let title = input_file_name_str
+			[INPUT_PATH.len() + 1..input_file_name_str.len() - 3]
+			.as_bytes();
+		write_to_output(&mut output_buf, title);
 		write_to_output(
 			&mut output_buf,
 			b"</title></head>
