@@ -1,3 +1,7 @@
+use std::io::BufRead;
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::io::Write;
 use std::{fs, io};
 
@@ -67,14 +71,9 @@ fn main() -> io::Result<()> {
 	}
 
 	for input_file_name in markdown_files {
-		let input_file =
-			fs::read_to_string(&input_file_name).unwrap_or_else(|e| {
-				panic!(
-					"Failed opening \"{}\": {}.",
-					&input_file_name.display(),
-					e
-				)
-			});
+		let input_file = fs::File::open(&input_file_name).unwrap_or_else(|e| {
+			panic!("Failed opening \"{}\": {}.", &input_file_name.display(), e)
+		});
 
 		let input_file_name_str =
 			input_file_name.to_str().unwrap_or_else(|| {
@@ -83,8 +82,105 @@ fn main() -> io::Result<()> {
 					&input_file_name.display()
 				)
 			});
+		let mut title = input_file_name_str
+			[INPUT_PATH.len() + 1..input_file_name_str.len() - 3]
+			.to_owned();
 
-		let parser = Parser::new(input_file.as_str());
+		let mut reader = io::BufReader::new(input_file);
+		let mut line = String::new();
+		let first_line_len = reader.read_line(&mut line).unwrap_or_else(|e| {
+			panic!(
+				"Failed reading first line from \"{}\": {}.",
+				&input_file_name.display(),
+				e
+			)
+		});
+
+		// YAML Front matter present?
+		if first_line_len == 4 && line == "---\n" {
+			use yaml_rust::YamlLoader;
+
+			let mut front_matter = String::new();
+			const MAX_FRONT_MATTER_LINES: u8 = 16;
+			let mut line_count = 0;
+			loop {
+				line.clear();
+				let _line_len =
+					reader.read_line(&mut line).unwrap_or_else(|e| {
+						panic!(
+							"Failed reading line from \"{}\": {}.",
+							&input_file_name.display(),
+							e
+						)
+					});
+				if line == "---\n" {
+					break;
+				} else {
+					line_count += 1;
+					if line_count > MAX_FRONT_MATTER_LINES {
+						panic!("Entered front matter parsing mode but failed to find end after {} lines while parsing {}.", MAX_FRONT_MATTER_LINES, &input_file_name.display());
+					}
+					front_matter.push_str(&line);
+				}
+			}
+			let yaml =
+				YamlLoader::load_from_str(&front_matter).unwrap_or_else(|e| {
+					panic!(
+						"Failed loading YAML front matter from \"{}\": {}.",
+						&input_file_name.display(),
+						e
+					)
+				});
+			if yaml.len() != 1 {
+				panic!("Expected only one YAML root element (Hash) in front matter of \"{}\" but got {}.", 
+					&input_file_name.display(), yaml.len());
+			}
+			match &yaml[0] {
+				yaml_rust::Yaml::Hash(hash) => {
+					for mapping in hash {
+						match mapping.0 {
+							yaml_rust::Yaml::String(s) => {
+								if s == "title" {
+									if let yaml_rust::Yaml::String(value) = mapping.1 {
+										title = value.clone();
+									} else {
+										panic!("title of \"{}\" has unexpected type {:?}",
+											&input_file_name.display(), mapping.1)
+									}
+								} else {
+									println!("Skipping unrecognized \"{}\" in \"{}\".", s, &input_file_name.display())
+								}
+							},
+							_ => panic!("Expected string keys in YAML element in front matter of \"{}\" but got {:?}.", 
+									&input_file_name.display(), &mapping.0)
+						}
+					}
+				},
+				_ => panic!("Expected Hash as YAML root element in front matter of \"{}\" but got {:?}.", 
+					&input_file_name.display(), &yaml[0])
+			}
+		} else {
+			reader.seek(SeekFrom::Start(0)).unwrap_or_else(|e| {
+				panic!(
+					"Failed seeking in \"{}\": {}.",
+					&input_file_name.display(),
+					e
+				)
+			});
+		}
+
+		let mut input_file_str = String::new();
+		let _size =
+			reader
+				.read_to_string(&mut input_file_str)
+				.unwrap_or_else(|e| {
+					panic!(
+						"Failed reading first line from \"{}\": {}.",
+						&input_file_name.display(),
+						e
+					)
+				});
+		let parser = Parser::new(&input_file_str);
 		let mut output = Vec::new();
 		let mut output_buf = io::BufWriter::new(&mut output);
 		write_to_output(
@@ -92,10 +188,7 @@ fn main() -> io::Result<()> {
 			b"<html>
 <head><title>",
 		);
-		let title = input_file_name_str
-			[INPUT_PATH.len() + 1..input_file_name_str.len() - 3]
-			.as_bytes();
-		write_to_output(&mut output_buf, title);
+		write_to_output(&mut output_buf, title.as_bytes());
 		write_to_output(
 			&mut output_buf,
 			b"</title></head>
