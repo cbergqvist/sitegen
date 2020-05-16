@@ -179,12 +179,11 @@ fn process_markdown_file(input_file_name: &std::path::PathBuf) {
 }
 
 fn parse_front_matter(
-	input_file_name_str: &str,
+	input_file_name: &str,
 	reader: &mut io::BufReader<std::fs::File>,
 ) -> FrontMatter {
 	let mut result = FrontMatter {
-		title: input_file_name_str
-			[INPUT_PATH.len() + 1..input_file_name_str.len() - 3]
+		title: input_file_name[INPUT_PATH.len() + 1..input_file_name.len() - 3]
 			.to_owned(),
 		date: "1970-01-01T00:00:00Z".to_string(),
 		published: true,
@@ -199,14 +198,14 @@ fn parse_front_matter(
 	let first_line_len = reader.read_line(&mut line).unwrap_or_else(|e| {
 		panic!(
 			"Failed reading first line from \"{}\": {}.",
-			&input_file_name_str, e
+			&input_file_name, e
 		)
 	});
 
 	// YAML Front matter present missing?
 	if first_line_len != 4 || line != "---\n" {
 		reader.seek(SeekFrom::Start(0)).unwrap_or_else(|e| {
-			panic!("Failed seeking in \"{}\": {}.", &input_file_name_str, e)
+			panic!("Failed seeking in \"{}\": {}.", &input_file_name, e)
 		});
 
 		return result;
@@ -220,137 +219,149 @@ fn parse_front_matter(
 	loop {
 		line.clear();
 		let _line_len = reader.read_line(&mut line).unwrap_or_else(|e| {
-			panic!(
-				"Failed reading line from \"{}\": {}.",
-				&input_file_name_str, e
-			)
+			panic!("Failed reading line from \"{}\": {}.", &input_file_name, e)
 		});
 		if line == "---\n" {
 			break;
 		} else {
 			line_count += 1;
 			if line_count > MAX_FRONT_MATTER_LINES {
-				panic!("Entered front matter parsing mode but failed to find end after {} lines while parsing {}.", MAX_FRONT_MATTER_LINES, &input_file_name_str);
+				panic!("Entered front matter parsing mode but failed to find end after {} lines while parsing {}.", MAX_FRONT_MATTER_LINES, &input_file_name);
 			}
 			front_matter_str.push_str(&line);
 		}
 	}
+
 	let yaml =
 		YamlLoader::load_from_str(&front_matter_str).unwrap_or_else(|e| {
 			panic!(
 				"Failed loading YAML front matter from \"{}\": {}.",
-				&input_file_name_str, e
+				&input_file_name, e
 			)
 		});
+
 	if yaml.len() != 1 {
 		panic!("Expected only one YAML root element (Hash) in front matter of \"{}\" but got {}.", 
-			&input_file_name_str, yaml.len());
+			&input_file_name, yaml.len());
 	}
+
 	if let yaml_rust::Yaml::Hash(hash) = &yaml[0] {
 		for mapping in hash {
 			if let yaml_rust::Yaml::String(s) = mapping.0 {
-				if s == "title" {
-					if let yaml_rust::Yaml::String(value) = mapping.1 {
-						result.title = value.clone();
-					} else {
-						panic!(
-							"title of \"{}\" has unexpected type {:?}",
-							&input_file_name_str, mapping.1
-						)
-					}
-				} else if s == "date" {
-					if let yaml_rust::Yaml::String(value) = mapping.1 {
-						result.date = value.clone();
-					} else {
-						panic!(
-							"date of \"{}\" has unexpected type {:?}",
-							&input_file_name_str, mapping.1
-						)
-					}
-				} else if s == "published" {
-					if let yaml_rust::Yaml::Boolean(value) = mapping.1 {
-						result.published = *value;
-					} else {
-						panic!(
-							"published of \"{}\" has unexpected type {:?}",
-							&input_file_name_str, mapping.1
-						)
-					}
-				} else if s == "edited" {
-					if let yaml_rust::Yaml::String(value) = mapping.1 {
-						result.edited = Some(value.clone());
-					} else {
-						panic!(
-							"edited of \"{}\" has unexpected type {:?}",
-							&input_file_name_str, mapping.1
-						)
-					}
-				} else if s == "categories" {
-					if let yaml_rust::Yaml::Array(value) = mapping.1 {
-						for element in value {
-							if let yaml_rust::Yaml::String(value) = element {
-								result.categories.push(value.clone())
-							} else {
-								panic!("Element of categories of \"{}\" has unexpected type {:?}",
-							&input_file_name_str, element)
-							}
-						}
-					} else {
-						panic!(
-							"categories of \"{}\" has unexpected type {:?}",
-							&input_file_name_str, mapping.1
-						)
-					}
-				} else if s == "tags" {
-					if let yaml_rust::Yaml::Array(value) = mapping.1 {
-						result.tags.clear();
-						for element in value {
-							if let yaml_rust::Yaml::String(value) = element {
-								result.tags.push(value.clone())
-							} else {
-								panic!("Element of tags of \"{}\" has unexpected type {:?}",
-							&input_file_name_str, element)
-							}
-						}
-					} else {
-						panic!(
-							"tags of \"{}\" has unexpected type {:?}",
-							&input_file_name_str, mapping.1
-						)
-					}
-				} else if s == "layout" {
-					if let yaml_rust::Yaml::String(value) = mapping.1 {
-						result.layout = Some(value.clone());
-					} else {
-						panic!(
-							"layout of \"{}\" has unexpected type {:?}",
-							&input_file_name_str, mapping.1
-						)
-					}
-				} else {
-					if let yaml_rust::Yaml::String(value) = mapping.1 {
-						result
-							.custom_attributes
-							.insert(s.to_string(), value.clone());
-					} else {
-						panic!("custom attribute \"{}\" of \"{}\" has unexpected type {:?}", s,
-							&input_file_name_str, mapping.1)
-					}
-
-					println!(
-						"Skipping unrecognized \"{}\" in \"{}\".",
-						s, &input_file_name_str
-					)
-				}
+				parse_yaml_attribute(
+					&mut result,
+					&s,
+					&mapping.1,
+					&input_file_name,
+				)
 			} else {
 				panic!("Expected string keys in YAML element in front matter of \"{}\" but got {:?}.", 
-						&input_file_name_str, &mapping.0)
+						&input_file_name, &mapping.0)
 			}
 		}
 	} else {
 		panic!("Expected Hash as YAML root element in front matter of \"{}\" but got {:?}.", 
-			&input_file_name_str, &yaml[0])
+			&input_file_name, &yaml[0])
 	}
 
 	return result;
+}
+
+fn parse_yaml_attribute(
+	front_matter: &mut FrontMatter,
+	name: &str,
+	value: &yaml_rust::Yaml,
+	input_file_name: &str,
+) {
+	if name == "title" {
+		if let yaml_rust::Yaml::String(value) = value {
+			front_matter.title = value.clone();
+		} else {
+			panic!(
+				"title of \"{}\" has unexpected type {:?}",
+				&input_file_name, value
+			)
+		}
+	} else if name == "date" {
+		if let yaml_rust::Yaml::String(value) = value {
+			front_matter.date = value.clone();
+		} else {
+			panic!(
+				"date of \"{}\" has unexpected type {:?}",
+				&input_file_name, value
+			)
+		}
+	} else if name == "published" {
+		if let yaml_rust::Yaml::Boolean(value) = value {
+			front_matter.published = *value;
+		} else {
+			panic!(
+				"published of \"{}\" has unexpected type {:?}",
+				&input_file_name, value
+			)
+		}
+	} else if name == "edited" {
+		if let yaml_rust::Yaml::String(value) = value {
+			front_matter.edited = Some(value.clone());
+		} else {
+			panic!(
+				"edited of \"{}\" has unexpected type {:?}",
+				&input_file_name, value
+			)
+		}
+	} else if name == "categories" {
+		if let yaml_rust::Yaml::Array(value) = value {
+			for element in value {
+				if let yaml_rust::Yaml::String(value) = element {
+					front_matter.categories.push(value.clone())
+				} else {
+					panic!("Element of categories of \"{}\" has unexpected type {:?}",
+						&input_file_name, element)
+				}
+			}
+		} else {
+			panic!(
+				"categories of \"{}\" has unexpected type {:?}",
+				&input_file_name, value
+			)
+		}
+	} else if name == "tags" {
+		if let yaml_rust::Yaml::Array(value) = value {
+			for element in value {
+				if let yaml_rust::Yaml::String(value) = element {
+					front_matter.tags.push(value.clone())
+				} else {
+					panic!(
+						"Element of tags of \"{}\" has unexpected type {:?}",
+						&input_file_name, element
+					)
+				}
+			}
+		} else {
+			panic!(
+				"tags of \"{}\" has unexpected type {:?}",
+				&input_file_name, value
+			)
+		}
+	} else if name == "layout" {
+		if let yaml_rust::Yaml::String(value) = value {
+			front_matter.layout = Some(value.clone());
+		} else {
+			panic!(
+				"layout of \"{}\" has unexpected type {:?}",
+				&input_file_name, value
+			)
+		}
+	} else {
+		if let yaml_rust::Yaml::String(value) = value {
+			front_matter
+				.custom_attributes
+				.insert(name.to_string(), value.clone());
+		} else {
+			panic!(
+				"custom attribute \"{}\" of \"{}\" has unexpected type {:?}",
+				name, &input_file_name, value
+			)
+		}
+	}
 }
