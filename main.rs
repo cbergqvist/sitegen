@@ -3,6 +3,7 @@ use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::io::Write;
+use std::time::Instant;
 use std::{fs, io};
 
 use pulldown_cmark::{html, Parser};
@@ -71,6 +72,7 @@ fn main() -> io::Result<()> {
 	}
 
 	for input_file_name in markdown_files {
+		let timer = Instant::now();
 		let input_file = fs::File::open(&input_file_name).unwrap_or_else(|e| {
 			panic!("Failed opening \"{}\": {}.", &input_file_name.display(), e)
 		});
@@ -227,6 +229,12 @@ fn main() -> io::Result<()> {
 		output_file.sync_data().unwrap_or_else(|e| {
 			panic!("Failed sync_data() for \"{}\": {}.", &output_file_name, e)
 		});
+
+		println!(
+			"Done with {} after {} ms.",
+			input_file_name_str,
+			timer.elapsed().as_millis()
+		);
 	}
 
 	Ok(())
