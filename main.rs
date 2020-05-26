@@ -129,14 +129,37 @@ fn process_markdown_file(input_file_name: &std::path::PathBuf) {
 	write_to_output(
 		&mut output_buf,
 		b"<html>
-<head><title>",
+<head>
+<title>",
 	);
 	write_to_output(&mut output_buf, front_matter.title.as_bytes());
 	write_to_output(
 		&mut output_buf,
-		b"</title></head>
-<body>",
+		b"</title>
+<style type=\"text/css\">
+.container {
+	max-width: 38rem;
+	margin-left: auto;
+	margin-right: auto;
+	font-family: \"Helvetica Neue\", Helvetica, Arial, sans-serif;
+}
+TIME {
+	color: rgb(154, 154, 154);
+}
+HR {
+	border: 0;
+	border-top: 1px solid #eee;
+}
+</style>
+</head>
+<body>
+<div class=\"container\">
+<time datetime=\"",
 	);
+	write_to_output(&mut output_buf, front_matter.date.as_bytes());
+	write_to_output(&mut output_buf, b"\">");
+	write_to_output(&mut output_buf, front_matter.date.as_bytes());
+	write_to_output(&mut output_buf, b"</time>");
 	html::write_html(&mut output_buf, parser).unwrap_or_else(|e| {
 		panic!(
 			"Failed converting Markdown file \"{}\" to HTML: {}.",
@@ -146,7 +169,8 @@ fn process_markdown_file(input_file_name: &std::path::PathBuf) {
 	});
 	write_to_output(
 		&mut output_buf,
-		b"</body>
+		b"</div>
+</body>
 </html>",
 	);
 
@@ -166,6 +190,7 @@ fn process_markdown_file(input_file_name: &std::path::PathBuf) {
 		.unwrap_or_else(|e| {
 			panic!("Failed writing to \"{}\": {}.", &output_file_name, e)
 		});
+
 	// Avoiding sync_all() for now to be friendlier to disks.
 	output_file.sync_data().unwrap_or_else(|e| {
 		panic!("Failed sync_data() for \"{}\": {}.", &output_file_name, e)
