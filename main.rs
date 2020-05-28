@@ -7,12 +7,9 @@ use std::io::Write;
 use std::option::Option;
 use std::string::String;
 use std::time::Instant;
-use std::{fs, io};
+use std::{env, fmt, fs, io};
 
 use pulldown_cmark::{html, Parser};
-
-const INPUT_PATH: &str = "./input";
-const OUTPUT_PATH: &str = "./output";
 
 struct FrontMatter {
 	title: String,
@@ -25,28 +22,131 @@ struct FrontMatter {
 	custom_attributes: BTreeMap<String, String>,
 }
 
-fn main() -> io::Result<()> {
-	let markdown_files = get_markdown_files();
+struct BoolArg {
+	name: &'static str,
+	help: &'static str,
+	value: bool,
+}
 
-	if markdown_files.is_empty() {
-		println!("Found no valid file entries under \"{}\".", INPUT_PATH);
+struct StringArg {
+	name: &'static str,
+	help: &'static str,
+	value: String,
+}
+
+impl fmt::Display for BoolArg {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "-{} {}", self.name, self.help)
+	}
+}
+
+impl fmt::Display for StringArg {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "-{} {}", self.name, self.help)
+	}
+}
+
+fn main() -> io::Result<()> {
+	// Not using the otherwise brilliant CLAP crate since I detest string matching args to get their values.
+	let mut help_arg = BoolArg {
+		name: "help",
+		help: "Print this text",
+		value: false,
+	};
+	let mut input_arg = StringArg {
+		name: "input",
+		help: "Set input directory to process",
+		value: String::from("./input"),
+	};
+	let mut output_arg = StringArg {
+		name: "output",
+		help: "Set output directory to write to",
+		value: String::from("./output"),
+	};
+	let mut watch_arg = BoolArg {
+		name: "watch",
+		help: "Run indefinitely, watching input directory for changes",
+		value: false,
+	};
+
+	let mut first_arg = true;
+	let mut previous_arg = None;
+	for mut arg in env::args() {
+		// Skip executable arg itself.
+		if first_arg {
+			first_arg = false;
+			continue;
+		}
+
+		if let Some(prev) = previous_arg {
+			if prev == input_arg.name {
+				input_arg.value = arg;
+			} else if prev == output_arg.name {
+				output_arg.value = arg;
+			}
+			previous_arg = None;
+			continue;
+		}
+
+		if arg.len() < 2 || arg.as_bytes()[0] != b'-' {
+			panic!("Unexpected argument: {}", arg)
+		}
+
+		arg.remove(0);
+
+		if arg == help_arg.name {
+			help_arg.value = true;
+		} else if arg == input_arg.name || arg == output_arg.name {
+			previous_arg = Some(arg);
+		} else if arg == watch_arg.name {
+			watch_arg.value = true;
+		} else {
+			panic!("Unsupported argument: {}", arg)
+		}
+	}
+
+	if help_arg.value {
+		println!(
+			"SiteGen version 0.1
+Christopher Bergqvist <chris@digitalpoetry.se>
+
+Basic static site generator.
+
+Arguments:"
+		);
+		println!("{}", help_arg);
+		println!("{}", input_arg);
+		println!("{}", output_arg);
+		println!("{}", watch_arg);
+
 		return Ok(());
 	}
 
-	fs::create_dir(OUTPUT_PATH).unwrap_or_else(|e| {
-		panic!("Failed creating \"{}\": {}.", OUTPUT_PATH, e)
+	if watch_arg.value {
+		panic!("Watching is not yet implemented.")
+	}
+
+	let markdown_files = get_markdown_files(&input_arg.value);
+
+	if markdown_files.is_empty() {
+		println!("Found no valid file entries under \"{}\".", input_arg.value);
+		return Ok(());
+	}
+
+	fs::create_dir(&output_arg.value).unwrap_or_else(|e| {
+		panic!("Failed creating \"{}\": {}.", input_arg.value, e)
 	});
 
 	for file_name in markdown_files {
-		process_markdown_file(&file_name)
+		process_markdown_file(&file_name, &input_arg.value, &output_arg.value)
 	}
 
 	Ok(())
 }
 
-fn get_markdown_files() -> Vec<std::path::PathBuf> {
-	let entries = fs::read_dir(INPUT_PATH).unwrap_or_else(|e| {
-		panic!("Failed reading paths from \"{}\": {}.", INPUT_PATH, e)
+fn get_markdown_files(input_path: &str) -> Vec<std::path::PathBuf> {
+	let entries = fs::read_dir(input_path).unwrap_or_else(|e| {
+		panic!("Failed reading paths from \"{}\": {}.", input_path, e)
 	});
 	let markdown_extension = std::ffi::OsStr::new("md");
 	let mut files = Vec::new();
@@ -80,14 +180,18 @@ fn get_markdown_files() -> Vec<std::path::PathBuf> {
 				}
 			}
 			Err(e) => {
-				println!("WARNING: Invalid entry in \"{}\": {}", INPUT_PATH, e)
+				println!("WARNING: Invalid entry in \"{}\": {}", input_path, e)
 			}
 		}
 	}
 	return files;
 }
 
-fn process_markdown_file(input_file_name: &std::path::PathBuf) {
+fn process_markdown_file(
+	input_file_name: &std::path::PathBuf,
+	input_path: &str,
+	output_path: &str,
+) {
 	fn write_to_output(
 		output_buf: &mut io::BufWriter<&mut Vec<u8>>,
 		data: &[u8],
@@ -111,7 +215,8 @@ fn process_markdown_file(input_file_name: &std::path::PathBuf) {
 
 	let mut reader = io::BufReader::new(input_file);
 
-	let front_matter = parse_front_matter(&input_file_name_str, &mut reader);
+	let front_matter =
+		parse_front_matter(&input_file_name_str, &mut reader, input_path);
 	let mut input_file_str = String::new();
 	let _size =
 		reader
@@ -174,10 +279,10 @@ HR {
 </html>",
 	);
 
-	let mut output_file_name = String::from(OUTPUT_PATH);
+	let mut output_file_name = String::from(output_path);
 	output_file_name.push_str(
 		&input_file_name_str
-			[INPUT_PATH.len()..(input_file_name_str.len() - "md".len())],
+			[input_path.len()..(input_file_name_str.len() - "md".len())],
 	);
 	output_file_name.push_str("html");
 
@@ -206,9 +311,10 @@ HR {
 fn parse_front_matter(
 	input_file_name: &str,
 	reader: &mut io::BufReader<std::fs::File>,
+	input_path: &str,
 ) -> FrontMatter {
 	let mut result = FrontMatter {
-		title: input_file_name[INPUT_PATH.len() + 1..input_file_name.len() - 3]
+		title: input_file_name[input_path.len() + 1..input_file_name.len() - 3]
 			.to_owned(),
 		date: "1970-01-01T00:00:00Z".to_string(),
 		published: true,
