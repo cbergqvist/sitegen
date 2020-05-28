@@ -6,10 +6,13 @@ use std::io::SeekFrom;
 use std::io::Write;
 use std::option::Option;
 use std::string::String;
-use std::time::Instant;
+use std::sync::mpsc::channel;
+use std::time::{Duration, Instant};
 use std::{env, fmt, fs, io};
 
 use pulldown_cmark::{html, Parser};
+
+use notify::{watcher, RecursiveMode, Watcher};
 
 struct FrontMatter {
 	title: String,
@@ -122,11 +125,65 @@ Arguments:"
 		return Ok(());
 	}
 
+	let markdown_extension = std::ffi::OsStr::new("md");
+
 	if watch_arg.value {
-		panic!("Watching is not yet implemented.")
+		let (tx, rx) = channel();
+		let mut watcher = watcher(tx, Duration::from_millis(200))
+			.unwrap_or_else(|e| {
+				panic!("Unable to create watcher: {}", e);
+			});
+
+		watcher
+			.watch(&input_arg.value, RecursiveMode::Recursive)
+			.unwrap_or_else(|e| {
+				panic!("Unable to watch {}: {}", &input_arg.value, e);
+			});
+
+		loop {
+			match rx.recv() {
+				Ok(event) => match event {
+					notify::DebouncedEvent::Write(mut path) => {
+						path = path.canonicalize().unwrap_or_else(|e| {
+							panic!(
+								"Canonicalization of {} failed: {}",
+								path.display(),
+								e
+							)
+						});
+						if is_file_with_extension(&path, markdown_extension) {
+							match fs::create_dir(&output_arg.value) {
+								Ok(_) => {}
+								Err(e) => {
+									if e.kind()
+										!= std::io::ErrorKind::AlreadyExists
+									{
+										panic!(
+											"Failed creating \"{}\": {}.",
+											output_arg.value, e
+										)
+									}
+								}
+							}
+
+							process_markdown_file(
+								&path,
+								&input_arg.value,
+								&output_arg.value,
+							)
+						}
+					}
+					_ => {
+						println!("Skipping {:?}", event);
+					}
+				},
+				Err(e) => panic!("Watch error: {}", e),
+			}
+		}
 	}
 
-	let markdown_files = get_markdown_files(&input_arg.value);
+	let markdown_files =
+		get_markdown_files(&input_arg.value, markdown_extension);
 
 	if markdown_files.is_empty() {
 		println!("Found no valid file entries under \"{}\".", input_arg.value);
@@ -134,7 +191,7 @@ Arguments:"
 	}
 
 	fs::create_dir(&output_arg.value).unwrap_or_else(|e| {
-		panic!("Failed creating \"{}\": {}.", input_arg.value, e)
+		panic!("Failed creating \"{}\": {}.", output_arg.value, e)
 	});
 
 	for file_name in markdown_files {
@@ -144,18 +201,26 @@ Arguments:"
 	Ok(())
 }
 
-fn get_markdown_files(input_path: &str) -> Vec<std::path::PathBuf> {
+fn is_file_with_extension(
+	path: &std::path::PathBuf,
+	extension: &std::ffi::OsStr,
+) -> bool {
+	path.extension() == Some(extension)
+}
+
+fn get_markdown_files(
+	input_path: &str,
+	markdown_extension: &std::ffi::OsStr,
+) -> Vec<std::path::PathBuf> {
 	let entries = fs::read_dir(input_path).unwrap_or_else(|e| {
 		panic!("Failed reading paths from \"{}\": {}.", input_path, e)
 	});
-	let markdown_extension = std::ffi::OsStr::new("md");
 	let mut files = Vec::new();
 	for entry in entries {
 		match entry {
 			Ok(entry) => {
 				let path = entry.path();
-				let ext = path.extension();
-				if ext == Some(markdown_extension) {
+				if is_file_with_extension(&path, markdown_extension) {
 					if let Ok(ft) = entry.file_type() {
 						if ft.is_file() {
 							files.push(path);
@@ -280,10 +345,35 @@ HR {
 	);
 
 	let mut output_file_name = String::from(output_path);
-	output_file_name.push_str(
-		&input_file_name_str
-			[input_path.len()..(input_file_name_str.len() - "md".len())],
-	);
+	if input_file_name.starts_with(input_path) {
+		output_file_name.push_str(
+			&input_file_name_str
+				[input_path.len()..(input_file_name_str.len() - "md".len())],
+		);
+	} else {
+		let full_input_path =
+			std::fs::canonicalize(input_path).unwrap_or_else(|e| {
+				panic!("Failed to canonicalize {}: {}", input_path, e)
+			});
+		if input_file_name.starts_with(&full_input_path) {
+			let full_input_path_str =
+				full_input_path.to_str().unwrap_or_else(|| {
+					panic!(
+						"Failed to convert {} into string.",
+						full_input_path.display()
+					);
+				});
+			output_file_name.push_str(
+				&input_file_name_str[full_input_path_str.len()
+					..(input_file_name_str.len() - "md".len())],
+			);
+		} else {
+			panic!(
+				"Unable to handle input file name: {}",
+				input_file_name.display()
+			)
+		}
+	}
 	output_file_name.push_str("html");
 
 	let mut output_file =

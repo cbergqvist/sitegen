@@ -9,6 +9,7 @@ edition = "2018"
 [dependencies]
 pulldown-cmark = "0.7.1"
 yaml-rust = "0.4.3"
+notify = "4.0.15"
 
 [[bin]]
 name = "sitegen"
