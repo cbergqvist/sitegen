@@ -180,7 +180,8 @@ Arguments:"
 			}
 			Err(e) => println!("WARNING: Unable to read stream: {}", e),
 		}
-		return None;
+
+		None
 	}
 
 	fn handle_write(
@@ -374,7 +375,8 @@ fn get_markdown_files(
 			}
 		}
 	}
-	return files;
+
+	files
 }
 
 fn process_markdown_file(
@@ -386,7 +388,7 @@ fn process_markdown_file(
 		output_buf: &mut io::BufWriter<&mut Vec<u8>>,
 		data: &[u8],
 	) {
-		output_buf.write(data).unwrap_or_else(|e| {
+		output_buf.write_all(data).unwrap_or_else(|e| {
 			panic!("Failed writing \"{:?}\" to to buffer: {}.", data, e)
 		});
 	}
@@ -610,7 +612,7 @@ fn parse_front_matter(
 			&input_file_name, &yaml[0])
 	}
 
-	return result;
+	result
 }
 
 fn parse_yaml_attribute(
@@ -698,16 +700,14 @@ fn parse_yaml_attribute(
 				&input_file_name, value
 			)
 		}
+	} else if let yaml_rust::Yaml::String(value) = value {
+		front_matter
+			.custom_attributes
+			.insert(name.to_string(), value.clone());
 	} else {
-		if let yaml_rust::Yaml::String(value) = value {
-			front_matter
-				.custom_attributes
-				.insert(name.to_string(), value.clone());
-		} else {
-			panic!(
-				"custom attribute \"{}\" of \"{}\" has unexpected type {:?}",
-				name, &input_file_name, value
-			)
-		}
+		panic!(
+			"custom attribute \"{}\" of \"{}\" has unexpected type {:?}",
+			name, &input_file_name, value
+		)
 	}
 }
