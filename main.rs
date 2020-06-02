@@ -1,12 +1,14 @@
 use std::collections::BTreeMap;
 use std::io::BufRead;
-use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
-use std::io::Write;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::option::Option;
+use std::path::PathBuf;
 use std::string::String;
 use std::sync::mpsc::channel;
+use std::thread;
 use std::time::{Duration, Instant};
 use std::{env, fmt, fs, io};
 
@@ -127,7 +129,137 @@ Arguments:"
 
 	let markdown_extension = std::ffi::OsStr::new("md");
 
-	if watch_arg.value {
+	let markdown_files =
+		get_markdown_files(&input_arg.value, markdown_extension);
+
+	if markdown_files.is_empty() {
+		println!("Found no valid file entries under \"{}\".", input_arg.value);
+		return Ok(());
+	}
+
+	fs::create_dir(&output_arg.value).unwrap_or_else(|e| {
+		panic!("Failed creating \"{}\": {}.", output_arg.value, e)
+	});
+
+	for file_name in markdown_files {
+		process_markdown_file(&file_name, &input_arg.value, &output_arg.value)
+	}
+
+	if !watch_arg.value {
+		return Ok(());
+	}
+
+	const PORT: i16 = 8090;
+	let listener = TcpListener::bind(format!("127.0.0.1:{}", PORT))
+		.unwrap_or_else(|e| panic!("Failed to bind TCP listening port: {}", e));
+	println!("Listening for connections on port {}", PORT);
+
+	fn handle_read(stream: &mut TcpStream) -> Option<std::path::PathBuf> {
+		let mut buf = [0u8; 4096];
+		match stream.read(&mut buf) {
+			Ok(size) => {
+				let req_str = String::from_utf8_lossy(&buf);
+				println!("Request (size: {}):\n{}", size, req_str);
+				let mut lines = req_str.lines();
+				if let Some(first_line) = lines.next() {
+					let mut components = first_line.split(' ');
+					if let Some(method) = components.next() {
+						if method == "GET" {
+							if let Some(path) = components.next() {
+								return Some(std::path::PathBuf::from(
+									// Strip leading root slash.
+									&path[1..],
+								));
+							}
+						}
+					}
+				}
+			}
+			Err(e) => println!("WARNING: Unable to read stream: {}", e),
+		}
+		return None;
+	}
+
+	fn handle_write(
+		mut stream: TcpStream,
+		path: Option<PathBuf>,
+		root_dir: &PathBuf,
+	) {
+		fn write(bytes: &[u8], stream: &mut TcpStream) {
+			match stream.write_all(bytes) {
+				Ok(()) => println!("Wrote {} bytes.", bytes.len()),
+				Err(e) => println!("WARNING: Failed sending response: {}", e),
+			}
+		}
+
+		if let Some(path) = path {
+			let full_path = root_dir.join(&path);
+			println!("Opening: {}", full_path.display());
+
+			match fs::File::open(&full_path) {
+				Ok(mut input_file) => {
+					write(b"HTTP/1.1 200 OK\r\n", &mut stream);
+					if let Some(extension) = path.extension() {
+						let extension = extension.to_string_lossy();
+						if extension == "html" {
+							write(format!("Content-Type: text/{}; charset=UTF-8\r\n\r\n", extension).as_bytes(), &mut stream);
+						}
+					}
+					let mut buf = [0u8; 64 * 1024];
+					loop {
+						let size =
+							input_file.read(&mut buf).unwrap_or_else(|e| {
+								panic!(
+									"Failed reading from {}: {}",
+									full_path.display(),
+									e
+								);
+							});
+						if size < 1 {
+							break;
+						}
+
+						write(&buf[0..size + 1], &mut stream);
+					}
+				}
+				Err(e) => {
+					match e.kind() {
+						std::io::ErrorKind::NotFound => write(
+							format!("HTTP/1.1 404 Not found\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>Couldn't find: {}</body></html>\r\n", full_path.display()).as_bytes(),
+							&mut stream,
+						),
+						_ => write(
+							format!("HTTP/1.1 500 Error\r\n{}", e)
+								.as_bytes(),
+							&mut stream,
+						),
+					}
+				}
+			}
+		} else {
+			write(b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>Hello world</body></html>\r\n", &mut stream);
+		};
+	}
+
+	fn handle_client(mut stream: TcpStream, root_dir: &PathBuf) {
+		let path = handle_read(&mut stream);
+		handle_write(stream, path, root_dir);
+	}
+
+	let root_dir = PathBuf::from(&output_arg.value);
+	let listening_thread = thread::spawn(move || {
+		for stream in listener.incoming() {
+			match stream {
+				Ok(stream) => {
+					//thread::spawn(|| handle_client(stream, &root_dir));
+					handle_client(stream, &root_dir);
+				}
+				Err(e) => println!("WARNING: Unable to connect: {}", e),
+			}
+		}
+	});
+
+	let fs_thread = thread::spawn(move || {
 		let (tx, rx) = channel();
 		let mut watcher = watcher(tx, Duration::from_millis(200))
 			.unwrap_or_else(|e| {
@@ -151,7 +283,7 @@ Arguments:"
 								e
 							)
 						});
-						if is_file_with_extension(&path, markdown_extension) {
+						if is_file_with_extension(&path, &markdown_extension) {
 							match fs::create_dir(&output_arg.value) {
 								Ok(_) => {}
 								Err(e) => {
@@ -180,23 +312,13 @@ Arguments:"
 				Err(e) => panic!("Watch error: {}", e),
 			}
 		}
-	}
-
-	let markdown_files =
-		get_markdown_files(&input_arg.value, markdown_extension);
-
-	if markdown_files.is_empty() {
-		println!("Found no valid file entries under \"{}\".", input_arg.value);
-		return Ok(());
-	}
-
-	fs::create_dir(&output_arg.value).unwrap_or_else(|e| {
-		panic!("Failed creating \"{}\": {}.", output_arg.value, e)
 	});
 
-	for file_name in markdown_files {
-		process_markdown_file(&file_name, &input_arg.value, &output_arg.value)
-	}
+	listening_thread
+		.join()
+		.expect("Failed joining listening thread.");
+
+	fs_thread.join().expect("Failed joining FS thread.");
 
 	Ok(())
 }
