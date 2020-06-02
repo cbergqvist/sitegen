@@ -157,10 +157,17 @@ Arguments:"
 		.unwrap_or_else(|e| panic!("Failed to bind TCP listening port: {}", e));
 	println!("Listening for connections on port {}", PORT);
 
-	fn handle_read(stream: &mut TcpStream) -> Option<std::path::PathBuf> {
+	fn handle_read(stream: &mut TcpStream) -> std::path::PathBuf {
 		let mut buf = [0u8; 4096];
 		match stream.read(&mut buf) {
 			Ok(size) => {
+				if size == buf.len() {
+					panic!(
+						"Request sizes as large as {} are not supported.",
+						size
+					)
+				}
+
 				let req_str = String::from_utf8_lossy(&buf);
 				println!("Request (size: {}):\n{}", size, req_str);
 				let mut lines = req_str.lines();
@@ -169,26 +176,31 @@ Arguments:"
 					if let Some(method) = components.next() {
 						if method == "GET" {
 							if let Some(path) = components.next() {
-								return Some(std::path::PathBuf::from(
+								return std::path::PathBuf::from(
 									// Strip leading root slash.
 									&path[1..],
-								));
+								);
+							} else {
+								panic!("Missing path in: {}", first_line)
 							}
+						} else {
+							panic!("Unsupported method: {}", method)
 						}
+					} else {
+						panic!(
+							"Missing components in first HTTP request line: {}",
+							first_line
+						)
 					}
+				} else {
+					panic!("Missing lines in HTTP request.")
 				}
 			}
-			Err(e) => println!("WARNING: Unable to read stream: {}", e),
+			Err(e) => panic!("WARNING: Unable to read stream: {}", e),
 		}
-
-		None
 	}
 
-	fn handle_write(
-		mut stream: TcpStream,
-		path: Option<PathBuf>,
-		root_dir: &PathBuf,
-	) {
+	fn handle_write(mut stream: TcpStream, path: PathBuf, root_dir: &PathBuf) {
 		fn write(bytes: &[u8], stream: &mut TcpStream) {
 			match stream.write_all(bytes) {
 				Ok(()) => println!("Wrote {} bytes.", bytes.len()),
@@ -196,10 +208,9 @@ Arguments:"
 			}
 		}
 
-		if let Some(path) = path {
-			let full_path = root_dir.join(&path);
-			println!("Opening: {}", full_path.display());
-
+		let full_path = root_dir.join(&path);
+		println!("Opening: {}", full_path.display());
+		if full_path.is_file() {
 			match fs::File::open(&full_path) {
 				Ok(mut input_file) => {
 					write(b"HTTP/1.1 200 OK\r\n", &mut stream);
