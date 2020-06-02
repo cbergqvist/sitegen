@@ -134,15 +134,18 @@ Arguments:"
 
 	if markdown_files.is_empty() {
 		println!("Found no valid file entries under \"{}\".", input_arg.value);
-		return Ok(());
-	}
+	} else {
+		fs::create_dir(&output_arg.value).unwrap_or_else(|e| {
+			panic!("Failed creating \"{}\": {}.", output_arg.value, e)
+		});
 
-	fs::create_dir(&output_arg.value).unwrap_or_else(|e| {
-		panic!("Failed creating \"{}\": {}.", output_arg.value, e)
-	});
-
-	for file_name in markdown_files {
-		process_markdown_file(&file_name, &input_arg.value, &output_arg.value)
+		for file_name in markdown_files {
+			process_markdown_file(
+				&file_name,
+				&input_arg.value,
+				&output_arg.value,
+			)
+		}
 	}
 
 	if !watch_arg.value {
