@@ -278,19 +278,22 @@ Arguments:"
 		} else {
 			write(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html>
 <head><script>
-let socket = new WebSocket(\"ws://127.0.0.1:{}/chat\")
+let socket = new WebSocket(\"ws://127.0.0.1:{}/chat?\" + Date.now())
 socket.onopen = function(e) {{
 	//alert(\"[open] Connection established\")
 }}
 socket.onmessage = function(e) {{
 	var bytes = new Uint8Array(e.data)
-	alert(`Message ${{bytes.length}}`)
+	//alert(`Message ${{bytes.length}}`)
 	socket.close()
 	window.location.reload(true)
 }}
 socket.onerror = function(e) {{
 	alert(`Socket error: ${{e}}`)
 }}
+window.addEventListener('beforeunload', (event) => {{
+    socket.close()
+}});
 </script></head>
 <body>Magic</body>
 </html>\r\n", PORT).as_bytes(), &mut stream);
@@ -309,24 +312,55 @@ socket.onerror = function(e) {{
 
 		write(format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\nSec-WebSocket-Protocol: chat\r\n\r\n", accept_value).as_bytes(), &mut stream);
 
-		// TODO: Handle ping+pong.
+		stream.set_nonblocking(true).expect(
+			"Failed changing WebSocket TCP connection to nonblocking mode.",
+		);
+
 		let (mutex, cvar) = &*cond_pair;
 		loop {
 			let last_value = *mutex
 				.lock()
 				.unwrap_or_else(|e| panic!("Failed locking mutex: {}", e));
-			let _guard = cvar.wait_while(
-				mutex
-					.lock()
-					.unwrap_or_else(|e| panic!("Failed locking mutex: {}", e)),
-				|pending| *pending == last_value,
-			);
+			let (_guard, result) = cvar
+				.wait_timeout_while(
+					mutex.lock().unwrap_or_else(|e| {
+						panic!("Failed locking mutex: {}", e)
+					}),
+					Duration::from_millis(50),
+					|pending| *pending == last_value,
+				)
+				.unwrap_or_else(|e| panic!("Failed waiting: {}", e));
 
-			let mut header = [0u8; 2];
-			header[0] |= 0b1000_0000; // final frame
-			header[0] |= 0b0000_0010; // binary opcode
-			header[1] |= 0b0000_0000; // payload length
-			write(&header, &mut stream);
+			const FINAL_FRAME: u8 = 0b1000_0000;
+			const BINARY_OPCODE: u8 = 0b0000_0010;
+			const CLOSE_OPCODE: u8 = 0b0000_1000;
+			if result.timed_out() {
+				let mut buf = [0u8; 16];
+				let size =
+					stream.read(&mut buf).unwrap_or_else(|e| match e.kind() {
+						ErrorKind::WouldBlock => 0,
+						_ => panic!("Failed reading: {}", e),
+					});
+				if size > 0 {
+					// Is it a close frame?
+					const CLOSE_FRAME: u8 = FINAL_FRAME | CLOSE_OPCODE;
+					if buf[0] & 0b1000_1111 == CLOSE_FRAME {
+						println!(
+							"Received WebSocket connection close, responding in kind."
+						);
+						let frame = [CLOSE_FRAME, 0];
+						write(&frame, &mut stream);
+						return;
+					} else {
+						println!("WARNING: Received unhandled packet: {:?} ({} bytes)", &buf[0..size], size);
+					}
+				}
+			} else {
+				// Not a time-out? Then we got a proper file change notification!
+				// Time to notify the browser with an empty binary packet.
+				let frame = [FINAL_FRAME | BINARY_OPCODE, 0u8];
+				write(&frame, &mut stream);
+			}
 		}
 	}
 
