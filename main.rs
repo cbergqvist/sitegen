@@ -157,7 +157,12 @@ Arguments:"
 		.unwrap_or_else(|e| panic!("Failed to bind TCP listening port: {}", e));
 	println!("Listening for connections on port {}", PORT);
 
-	fn handle_read(stream: &mut TcpStream) -> std::path::PathBuf {
+	enum ReadResult {
+		GetRequest(PathBuf),
+		WebSocket(String),
+	}
+
+	fn handle_read(stream: &mut TcpStream) -> ReadResult {
 		let mut buf = [0u8; 4096];
 		match stream.read(&mut buf) {
 			Ok(size) => {
@@ -176,15 +181,35 @@ Arguments:"
 					if let Some(method) = components.next() {
 						if method == "GET" {
 							if let Some(path) = components.next() {
-								return std::path::PathBuf::from(
-									// Strip leading root slash.
-									&path[1..],
+								for line in lines {
+									let mut components = line.split(' ');
+									if let Some(component) = components.next() {
+										if component == "Sec-WebSocket-Key:" {
+											if let Some(websocket_key) =
+												components.next()
+											{
+												return ReadResult::WebSocket(
+													String::from(websocket_key),
+												);
+											}
+										}
+									}
+								}
+
+								return ReadResult::GetRequest(
+									std::path::PathBuf::from(
+										// Strip leading root slash.
+										&path[1..],
+									),
 								);
 							} else {
 								panic!("Missing path in: {}", first_line)
 							}
 						} else {
-							panic!("Unsupported method: {}", method)
+							panic!(
+								"Unsupported method \"{}\", line: {}",
+								method, first_line
+							)
 						}
 					} else {
 						panic!(
@@ -200,14 +225,14 @@ Arguments:"
 		}
 	}
 
-	fn handle_write(mut stream: TcpStream, path: PathBuf, root_dir: &PathBuf) {
-		fn write(bytes: &[u8], stream: &mut TcpStream) {
-			match stream.write_all(bytes) {
-				Ok(()) => println!("Wrote {} bytes.", bytes.len()),
-				Err(e) => println!("WARNING: Failed sending response: {}", e),
-			}
+	fn write(bytes: &[u8], stream: &mut TcpStream) {
+		match stream.write_all(bytes) {
+			Ok(()) => println!("Wrote {} bytes.", bytes.len()),
+			Err(e) => println!("WARNING: Failed sending response: {}", e),
 		}
+	}
 
+	fn handle_write(mut stream: TcpStream, path: PathBuf, root_dir: &PathBuf) {
 		let full_path = root_dir.join(&path);
 		println!("Opening: {}", full_path.display());
 		if full_path.is_file() {
@@ -252,13 +277,41 @@ Arguments:"
 				}
 			}
 		} else {
-			write(b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>Hello world</body></html>\r\n", &mut stream);
-		};
+			write(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html>
+<head><script>
+let socket = new WebSocket(\"ws://127.0.0.1:{}/chat\")
+socket.onopen = function(e) {{
+	alert(\"[open] Connection established\")
+}}
+socket.onmessage = function(e) {{
+	document.reload();
+}}
+socket.onerror = function(e) {{
+	alert(`Socket error: ${{e.message}}`)
+}}
+</script></head>
+<body>Magic</body>
+</html>\r\n", PORT).as_bytes(), &mut stream);
+		}
+	}
+
+	fn handle_websocket(mut stream: TcpStream, key: String) {
+		let mut m = sha1::Sha1::new();
+		m.update(key.as_bytes());
+		m.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+		let accept_value = base64::encode(m.digest().bytes());
+
+		write(format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\nSec-WebSocket-Protocol: chat\r\n", accept_value).as_bytes(), &mut stream);
+		// TODO: Implement file change notifications
 	}
 
 	fn handle_client(mut stream: TcpStream, root_dir: &PathBuf) {
-		let path = handle_read(&mut stream);
-		handle_write(stream, path, root_dir);
+		match handle_read(&mut stream) {
+			ReadResult::GetRequest(path) => {
+				handle_write(stream, path, root_dir)
+			}
+			ReadResult::WebSocket(key) => handle_websocket(stream, key),
+		}
 	}
 
 	let root_dir = PathBuf::from(&output_arg.value);
@@ -266,8 +319,10 @@ Arguments:"
 		for stream in listener.incoming() {
 			match stream {
 				Ok(stream) => {
-					//thread::spawn(|| handle_client(stream, &root_dir));
-					handle_client(stream, &root_dir);
+					let root_dir_clone = root_dir.clone();
+					thread::spawn(move || {
+						handle_client(stream, &root_dir_clone)
+					});
 				}
 				Err(e) => println!("WARNING: Unable to connect: {}", e),
 			}
