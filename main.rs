@@ -278,15 +278,15 @@ Arguments:"
 		} else {
 			write(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html>
 <head><script>
-let socket = new WebSocket(\"ws://127.0.0.1:{}/chat?\" + Date.now())
+// Tag on time in order to distinguish different sockets.
+let socket = new WebSocket(\"ws://127.0.0.1:{}/chat?now=\" + Date.now())
 socket.onopen = function(e) {{
 	//alert(\"[open] Connection established\")
 }}
 socket.onmessage = function(e) {{
 	var bytes = new Uint8Array(e.data)
 	//alert(`Message ${{bytes.length}}`)
-	socket.close()
-	window.location.reload(true)
+	window.frames['preview'].location.reload(true)
 }}
 socket.onerror = function(e) {{
 	alert(`Socket error: ${{e}}`)
@@ -295,7 +295,9 @@ window.addEventListener('beforeunload', (event) => {{
     socket.close()
 }});
 </script></head>
-<body>Magic</body>
+<body style=\"margin: 1px\">Preview, save Markdown file to disk for live reload:
+<iframe name=\"preview\" src=\"foo.html\" style=\"border:1px solid #eee; margin: 1px; width: 100%; height: 100%\"></iframe>
+</body>
 </html>\r\n", PORT).as_bytes(), &mut stream);
 		}
 	}
@@ -331,6 +333,7 @@ window.addEventListener('beforeunload', (event) => {{
 				)
 				.unwrap_or_else(|e| panic!("Failed waiting: {}", e));
 
+			// Based on WebSocket RFC - https://tools.ietf.org/html/rfc6455
 			const FINAL_FRAME: u8 = 0b1000_0000;
 			const BINARY_OPCODE: u8 = 0b0000_0010;
 			const CLOSE_OPCODE: u8 = 0b0000_1000;
@@ -348,7 +351,8 @@ window.addEventListener('beforeunload', (event) => {{
 						println!(
 							"Received WebSocket connection close, responding in kind."
 						);
-						let frame = [CLOSE_FRAME, 0];
+						const LENGTH: u8 = 0;
+						let frame = [CLOSE_FRAME, LENGTH];
 						write(&frame, &mut stream);
 						return;
 					} else {
