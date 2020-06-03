@@ -6,6 +6,7 @@ use std::option::Option;
 use std::path::PathBuf;
 use std::string::String;
 use std::sync::mpsc::channel;
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use std::{env, fmt, fs, io};
@@ -155,6 +156,8 @@ Arguments:"
 		.unwrap_or_else(|e| panic!("Failed to bind TCP listening port: {}", e));
 	println!("Listening for connections on port {}", PORT);
 
+	let cond_pair = Arc::new((Mutex::new(0), Condvar::new()));
+
 	enum ReadResult {
 		GetRequest(PathBuf),
 		WebSocket(String),
@@ -277,13 +280,16 @@ Arguments:"
 <head><script>
 let socket = new WebSocket(\"ws://127.0.0.1:{}/chat\")
 socket.onopen = function(e) {{
-	alert(\"[open] Connection established\")
+	//alert(\"[open] Connection established\")
 }}
 socket.onmessage = function(e) {{
-	document.reload();
+	var bytes = new Uint8Array(e.data)
+	alert(`Message ${{bytes.length}}`)
+	socket.close()
+	window.location.reload(true)
 }}
 socket.onerror = function(e) {{
-	alert(`Socket error: ${{e.message}}`)
+	alert(`Socket error: ${{e}}`)
 }}
 </script></head>
 <body>Magic</body>
@@ -291,33 +297,64 @@ socket.onerror = function(e) {{
 		}
 	}
 
-	fn handle_websocket(mut stream: TcpStream, key: String) {
+	fn handle_websocket(
+		mut stream: TcpStream,
+		key: String,
+		cond_pair: Arc<(Mutex<u32>, Condvar)>,
+	) {
 		let mut m = sha1::Sha1::new();
 		m.update(key.as_bytes());
 		m.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
 		let accept_value = base64::encode(m.digest().bytes());
 
-		write(format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\nSec-WebSocket-Protocol: chat\r\n", accept_value).as_bytes(), &mut stream);
-		// TODO: Implement file change notifications
+		write(format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\nSec-WebSocket-Protocol: chat\r\n\r\n", accept_value).as_bytes(), &mut stream);
+
+		// TODO: Handle ping+pong.
+		let (mutex, cvar) = &*cond_pair;
+		loop {
+			let last_value = *mutex
+				.lock()
+				.unwrap_or_else(|e| panic!("Failed locking mutex: {}", e));
+			let _guard = cvar.wait_while(
+				mutex
+					.lock()
+					.unwrap_or_else(|e| panic!("Failed locking mutex: {}", e)),
+				|pending| *pending == last_value,
+			);
+
+			let mut header = [0u8; 2];
+			header[0] |= 0b1000_0000; // final frame
+			header[0] |= 0b0000_0010; // binary opcode
+			header[1] |= 0b0000_0000; // payload length
+			write(&header, &mut stream);
+		}
 	}
 
-	fn handle_client(mut stream: TcpStream, root_dir: &PathBuf) {
+	fn handle_client(
+		mut stream: TcpStream,
+		root_dir: &PathBuf,
+		cond_pair: Arc<(Mutex<u32>, Condvar)>,
+	) {
 		match handle_read(&mut stream) {
 			ReadResult::GetRequest(path) => {
 				handle_write(stream, path, root_dir)
 			}
-			ReadResult::WebSocket(key) => handle_websocket(stream, key),
+			ReadResult::WebSocket(key) => {
+				handle_websocket(stream, key, cond_pair)
+			}
 		}
 	}
 
 	let root_dir = PathBuf::from(&output_arg.value);
+	let fs_cond_pair_clone = cond_pair.clone();
 	let listening_thread = thread::spawn(move || {
 		for stream in listener.incoming() {
 			match stream {
 				Ok(stream) => {
 					let root_dir_clone = root_dir.clone();
+					let cond_pair_clone = cond_pair.clone();
 					thread::spawn(move || {
-						handle_client(stream, &root_dir_clone)
+						handle_client(stream, &root_dir_clone, cond_pair_clone)
 					});
 				}
 				Err(e) => println!("WARNING: Unable to connect: {}", e),
@@ -368,6 +405,14 @@ socket.onerror = function(e) {{
 								&output_arg.value,
 							)
 						}
+
+						let (mutex, cvar) = &*fs_cond_pair_clone;
+
+						let mut value = mutex.lock().unwrap_or_else(|e| {
+							panic!("Failed locking mutex: {}", e)
+						});
+						*value += 1;
+						cvar.notify_all();
 					}
 					_ => {
 						println!("Skipping {:?}", event);
