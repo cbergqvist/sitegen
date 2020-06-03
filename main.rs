@@ -54,22 +54,22 @@ fn main() -> io::Result<()> {
 	// Not using the otherwise brilliant CLAP crate since I detest string matching args to get their values.
 	let mut help_arg = BoolArg {
 		name: "help",
-		help: "Print this text",
+		help: "Print this text.",
 		value: false,
 	};
 	let mut input_arg = StringArg {
 		name: "input",
-		help: "Set input directory to process",
+		help: "Set input directory to process.",
 		value: String::from("./input"),
 	};
 	let mut output_arg = StringArg {
 		name: "output",
-		help: "Set output directory to write to",
+		help: "Set output directory to write to.",
 		value: String::from("./output"),
 	};
 	let mut watch_arg = BoolArg {
 		name: "watch",
-		help: "Run indefinitely, watching input directory for changes",
+		help: "Run indefinitely, watching input directory for changes.",
 		value: false,
 	};
 
