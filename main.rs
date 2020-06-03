@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
-use std::io::BufRead;
-use std::io::Seek;
-use std::io::SeekFrom;
-use std::io::{Read, Write};
+use std::ffi::OsStr;
+use std::io::{BufRead, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::option::Option;
 use std::path::PathBuf;
@@ -127,7 +125,7 @@ Arguments:"
 		return Ok(());
 	}
 
-	let markdown_extension = std::ffi::OsStr::new("md");
+	let markdown_extension = OsStr::new("md");
 
 	let markdown_files =
 		get_markdown_files(&input_arg.value, markdown_extension);
@@ -196,12 +194,10 @@ Arguments:"
 									}
 								}
 
-								return ReadResult::GetRequest(
-									std::path::PathBuf::from(
-										// Strip leading root slash.
-										&path[1..],
-									),
-								);
+								return ReadResult::GetRequest(PathBuf::from(
+									// Strip leading root slash.
+									&path[1..],
+								));
 							} else {
 								panic!("Missing path in: {}", first_line)
 							}
@@ -264,7 +260,7 @@ Arguments:"
 				}
 				Err(e) => {
 					match e.kind() {
-						std::io::ErrorKind::NotFound => write(
+						ErrorKind::NotFound => write(
 							format!("HTTP/1.1 404 Not found\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>Couldn't find: {}</body></html>\r\n", full_path.display()).as_bytes(),
 							&mut stream,
 						),
@@ -357,9 +353,7 @@ socket.onerror = function(e) {{
 							match fs::create_dir(&output_arg.value) {
 								Ok(_) => {}
 								Err(e) => {
-									if e.kind()
-										!= std::io::ErrorKind::AlreadyExists
-									{
+									if e.kind() != ErrorKind::AlreadyExists {
 										panic!(
 											"Failed creating \"{}\": {}.",
 											output_arg.value, e
@@ -393,17 +387,14 @@ socket.onerror = function(e) {{
 	Ok(())
 }
 
-fn is_file_with_extension(
-	path: &std::path::PathBuf,
-	extension: &std::ffi::OsStr,
-) -> bool {
+fn is_file_with_extension(path: &PathBuf, extension: &OsStr) -> bool {
 	path.extension() == Some(extension)
 }
 
 fn get_markdown_files(
 	input_path: &str,
-	markdown_extension: &std::ffi::OsStr,
-) -> Vec<std::path::PathBuf> {
+	markdown_extension: &OsStr,
+) -> Vec<PathBuf> {
 	let entries = fs::read_dir(input_path).unwrap_or_else(|e| {
 		panic!("Failed reading paths from \"{}\": {}.", input_path, e)
 	});
@@ -446,7 +437,7 @@ fn get_markdown_files(
 }
 
 fn process_markdown_file(
-	input_file_name: &std::path::PathBuf,
+	input_file_name: &PathBuf,
 	input_path: &str,
 	output_path: &str,
 ) {
@@ -545,7 +536,7 @@ HR {
 		);
 	} else {
 		let full_input_path =
-			std::fs::canonicalize(input_path).unwrap_or_else(|e| {
+			fs::canonicalize(input_path).unwrap_or_else(|e| {
 				panic!("Failed to canonicalize {}: {}", input_path, e)
 			});
 		if input_file_name.starts_with(&full_input_path) {
@@ -593,7 +584,7 @@ HR {
 
 fn parse_front_matter(
 	input_file_name: &str,
-	reader: &mut io::BufReader<std::fs::File>,
+	reader: &mut io::BufReader<fs::File>,
 	input_path: &str,
 ) -> FrontMatter {
 	let mut result = FrontMatter {
