@@ -320,7 +320,8 @@ window.addEventListener('beforeunload', (event) => {{
     socket.close()
 }});
 </script></head>
-<body style=\"margin: 1px\">Preview, save Markdown file to disk for live reload:
+<body style=\"margin: 1px;\">
+<div style=\"display: block; position: fixed; background: rgba(0, 0, 255, 0.2); width: 100%\">Preview, save Markdown file to disk for live reload:</div>
 <iframe name=\"preview\"{} style=\"border:1px solid #eee; margin: 1px; width: 100%; height: 100%\"></iframe>
 </body>
 </html>\r\n", PORT, iframe_src).as_bytes(), &mut stream);
