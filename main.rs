@@ -131,6 +131,8 @@ Arguments:"
 	let markdown_files =
 		get_markdown_files(&input_arg.value, markdown_extension);
 
+	let mut output_files = Vec::new();
+
 	if markdown_files.is_empty() {
 		println!("Found no valid file entries under \"{}\".", input_arg.value);
 	} else {
@@ -138,12 +140,12 @@ Arguments:"
 			panic!("Failed creating \"{}\": {}.", output_arg.value, e)
 		});
 
-		for file_name in markdown_files {
-			process_markdown_file(
+		for file_name in &markdown_files {
+			output_files.push(process_markdown_file(
 				&file_name,
 				&input_arg.value,
 				&output_arg.value,
-			)
+			))
 		}
 	}
 
@@ -156,7 +158,18 @@ Arguments:"
 		.unwrap_or_else(|e| panic!("Failed to bind TCP listening port: {}", e));
 	println!("Listening for connections on port {}", PORT);
 
-	let cond_pair = Arc::new((Mutex::new(0), Condvar::new()));
+	struct Refresh {
+		index: u32,
+		file: Option<PathBuf>,
+	}
+
+	let cond_pair = Arc::new((
+		Mutex::new(Refresh {
+			index: 0,
+			file: None,
+		}),
+		Condvar::new(),
+	));
 
 	enum ReadResult {
 		GetRequest(PathBuf),
@@ -231,7 +244,12 @@ Arguments:"
 		}
 	}
 
-	fn handle_write(mut stream: TcpStream, path: PathBuf, root_dir: &PathBuf) {
+	fn handle_write(
+		mut stream: TcpStream,
+		path: PathBuf,
+		root_dir: &PathBuf,
+		start_file: Option<PathBuf>,
+	) {
 		let full_path = root_dir.join(&path);
 		println!("Opening: {}", full_path.display());
 		if full_path.is_file() {
@@ -276,6 +294,15 @@ Arguments:"
 				}
 			}
 		} else {
+			let iframe_src = if let Some(path) = start_file {
+				let mut s = String::from(" src=\"");
+				s.push_str(&path.to_string_lossy());
+				s.push_str("\"");
+				s
+			} else {
+				String::from("")
+			};
+
 			write(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html>
 <head><script>
 // Tag on time in order to distinguish different sockets.
@@ -284,9 +311,7 @@ socket.onopen = function(e) {{
 	//alert(\"[open] Connection established\")
 }}
 socket.onmessage = function(e) {{
-	var bytes = new Uint8Array(e.data)
-	//alert(`Message ${{bytes.length}}`)
-	window.frames['preview'].location.reload(true)
+	e.data.text().then(text => window.frames['preview'].location.href = text)
 }}
 socket.onerror = function(e) {{
 	alert(`Socket error: ${{e}}`)
@@ -296,16 +321,16 @@ window.addEventListener('beforeunload', (event) => {{
 }});
 </script></head>
 <body style=\"margin: 1px\">Preview, save Markdown file to disk for live reload:
-<iframe name=\"preview\" src=\"foo.html\" style=\"border:1px solid #eee; margin: 1px; width: 100%; height: 100%\"></iframe>
+<iframe name=\"preview\"{} style=\"border:1px solid #eee; margin: 1px; width: 100%; height: 100%\"></iframe>
 </body>
-</html>\r\n", PORT).as_bytes(), &mut stream);
+</html>\r\n", PORT, iframe_src).as_bytes(), &mut stream);
 		}
 	}
 
 	fn handle_websocket(
 		mut stream: TcpStream,
 		key: String,
-		cond_pair: Arc<(Mutex<u32>, Condvar)>,
+		cond_pair: Arc<(Mutex<Refresh>, Condvar)>,
 	) {
 		let mut m = sha1::Sha1::new();
 		m.update(key.as_bytes());
@@ -320,16 +345,17 @@ window.addEventListener('beforeunload', (event) => {{
 
 		let (mutex, cvar) = &*cond_pair;
 		loop {
-			let last_value = *mutex
+			let last_index = mutex
 				.lock()
-				.unwrap_or_else(|e| panic!("Failed locking mutex: {}", e));
-			let (_guard, result) = cvar
+				.unwrap_or_else(|e| panic!("Failed locking mutex: {}", e))
+				.index;
+			let (guard, result) = cvar
 				.wait_timeout_while(
 					mutex.lock().unwrap_or_else(|e| {
 						panic!("Failed locking mutex: {}", e)
 					}),
 					Duration::from_millis(50),
-					|pending| *pending == last_value,
+					|pending| pending.index == last_index,
 				)
 				.unwrap_or_else(|e| panic!("Failed waiting: {}", e));
 
@@ -361,9 +387,20 @@ window.addEventListener('beforeunload', (event) => {{
 				}
 			} else {
 				// Not a time-out? Then we got a proper file change notification!
-				// Time to notify the browser with an empty binary packet.
-				let frame = [FINAL_FRAME | BINARY_OPCODE, 0u8];
+				// Time to notify the browser.
+				let message = if let Some(path) = &guard.file {
+					String::from(path.to_string_lossy())
+				} else {
+					String::from("")
+				};
+				if message.len() > 125 {
+					panic!(
+						"Don't support variable-length WebSocket frames yet."
+					)
+				}
+				let frame = [FINAL_FRAME | BINARY_OPCODE, message.len() as u8];
 				write(&frame, &mut stream);
+				write(message.as_bytes(), &mut stream);
 			}
 		}
 	}
@@ -371,11 +408,12 @@ window.addEventListener('beforeunload', (event) => {{
 	fn handle_client(
 		mut stream: TcpStream,
 		root_dir: &PathBuf,
-		cond_pair: Arc<(Mutex<u32>, Condvar)>,
+		cond_pair: Arc<(Mutex<Refresh>, Condvar)>,
+		start_file: Option<PathBuf>,
 	) {
 		match handle_read(&mut stream) {
 			ReadResult::GetRequest(path) => {
-				handle_write(stream, path, root_dir)
+				handle_write(stream, path, root_dir, start_file)
 			}
 			ReadResult::WebSocket(key) => {
 				handle_websocket(stream, key, cond_pair)
@@ -385,19 +423,28 @@ window.addEventListener('beforeunload', (event) => {{
 
 	let root_dir = PathBuf::from(&output_arg.value);
 	let fs_cond_pair_clone = cond_pair.clone();
+	let start_file = output_files.first().cloned();
+
 	let listening_thread = thread::spawn(move || {
 		for stream in listener.incoming() {
 			match stream {
 				Ok(stream) => {
 					let root_dir_clone = root_dir.clone();
 					let cond_pair_clone = cond_pair.clone();
+					let start_file_clone = start_file.clone();
 					thread::spawn(move || {
-						handle_client(stream, &root_dir_clone, cond_pair_clone)
+						handle_client(
+							stream,
+							&root_dir_clone,
+							cond_pair_clone,
+							start_file_clone,
+						)
 					});
 				}
 				Err(e) => println!("WARNING: Unable to connect: {}", e),
 			}
 		}
+		println!("{:?}", start_file);
 	});
 
 	let fs_thread = thread::spawn(move || {
@@ -424,7 +471,10 @@ window.addEventListener('beforeunload', (event) => {{
 								e
 							)
 						});
-						if is_file_with_extension(&path, &markdown_extension) {
+						let path_to_communicate = if is_file_with_extension(
+							&path,
+							&markdown_extension,
+						) {
 							match fs::create_dir(&output_arg.value) {
 								Ok(_) => {}
 								Err(e) => {
@@ -437,19 +487,24 @@ window.addEventListener('beforeunload', (event) => {{
 								}
 							}
 
-							process_markdown_file(
+							Some(process_markdown_file(
 								&path,
 								&input_arg.value,
 								&output_arg.value,
-							)
-						}
+							))
+						} else {
+							None
+						};
 
 						let (mutex, cvar) = &*fs_cond_pair_clone;
 
-						let mut value = mutex.lock().unwrap_or_else(|e| {
+						let mut refresh = mutex.lock().unwrap_or_else(|e| {
 							panic!("Failed locking mutex: {}", e)
 						});
-						*value += 1;
+						if path_to_communicate.is_some() {
+							refresh.file = path_to_communicate;
+						}
+						refresh.index += 1;
 						cvar.notify_all();
 					}
 					_ => {
@@ -523,7 +578,7 @@ fn process_markdown_file(
 	input_file_name: &PathBuf,
 	input_path: &str,
 	output_path: &str,
-) {
+) -> PathBuf {
 	fn write_to_output(
 		output_buf: &mut io::BufWriter<&mut Vec<u8>>,
 		data: &[u8],
@@ -663,6 +718,8 @@ HR {
 		input_file_name_str,
 		timer.elapsed().as_millis()
 	);
+
+	PathBuf::from(&output_file_name[output_path.len()..])
 }
 
 fn parse_front_matter(
