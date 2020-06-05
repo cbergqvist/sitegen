@@ -464,7 +464,8 @@ window.addEventListener('beforeunload', (event) => {{
 		loop {
 			match rx.recv() {
 				Ok(event) => match event {
-					notify::DebouncedEvent::Write(mut path) => {
+					notify::DebouncedEvent::Write(mut path)
+					| notify::DebouncedEvent::Create(mut path) => {
 						path = path.canonicalize().unwrap_or_else(|e| {
 							panic!(
 								"Canonicalization of {} failed: {}",
