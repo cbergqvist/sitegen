@@ -57,6 +57,11 @@ fn main() -> io::Result<()> {
 		help: "Print this text.",
 		value: false,
 	};
+	let mut host_arg = StringArg {
+		name: "host",
+		help: "Set address to bind to. The default 127.0.0.1 can be used for privacy and 0.0.0.0 to give access to other machines.",
+		value: String::from("127.0.0.1"),
+	};
 	let mut input_arg = StringArg {
 		name: "input",
 		help: "Set input directory to process.",
@@ -83,7 +88,9 @@ fn main() -> io::Result<()> {
 		}
 
 		if let Some(prev) = previous_arg {
-			if prev == input_arg.name {
+			if prev == host_arg.name {
+				host_arg.value = arg;
+			} else if prev == input_arg.name {
 				input_arg.value = arg;
 			} else if prev == output_arg.name {
 				output_arg.value = arg;
@@ -92,15 +99,21 @@ fn main() -> io::Result<()> {
 			continue;
 		}
 
-		if arg.len() < 2 || arg.as_bytes()[0] != b'-' {
+		if arg.len() < 3
+			|| arg.as_bytes()[0] != b'-'
+			|| arg.as_bytes()[1] != b'-'
+		{
 			panic!("Unexpected argument: {}", arg)
 		}
 
-		arg.remove(0);
+		arg = arg.split_off(2);
 
 		if arg == help_arg.name {
 			help_arg.value = true;
-		} else if arg == input_arg.name || arg == output_arg.name {
+		} else if arg == host_arg.name
+			|| arg == input_arg.name
+			|| arg == output_arg.name
+		{
 			previous_arg = Some(arg);
 		} else if arg == watch_arg.name {
 			watch_arg.value = true;
@@ -119,6 +132,7 @@ Basic static site generator.
 Arguments:"
 		);
 		println!("{}", help_arg);
+		println!("{}", host_arg);
 		println!("{}", input_arg);
 		println!("{}", output_arg);
 		println!("{}", watch_arg);
@@ -154,9 +168,9 @@ Arguments:"
 	}
 
 	const PORT: i16 = 8090;
-	let listener = TcpListener::bind(format!("127.0.0.1:{}", PORT))
+	let listener = TcpListener::bind(format!("{}:{}", host_arg.value, PORT))
 		.unwrap_or_else(|e| panic!("Failed to bind TCP listening port: {}", e));
-	println!("Listening for connections on port {}", PORT);
+	println!("Listening for connections on {}:{}", host_arg.value, PORT);
 
 	struct Refresh {
 		index: u32,
@@ -249,10 +263,11 @@ Arguments:"
 		path: PathBuf,
 		root_dir: &PathBuf,
 		start_file: Option<PathBuf>,
+		host: &str,
 	) {
 		let full_path = root_dir.join(&path);
-		println!("Opening: {}", full_path.display());
 		if full_path.is_file() {
+			println!("Opening: {}", full_path.display());
 			match fs::File::open(&full_path) {
 				Ok(mut input_file) => {
 					write(b"HTTP/1.1 200 OK\r\n", &mut stream);
@@ -294,6 +309,7 @@ Arguments:"
 				}
 			}
 		} else {
+			println!("Requested path is not a file, returning index.");
 			let iframe_src = if let Some(path) = start_file {
 				let mut s = String::from(" src=\"");
 				s.push_str(&path.to_string_lossy());
@@ -306,7 +322,7 @@ Arguments:"
 			write(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html>
 <head><script>
 // Tag on time in order to distinguish different sockets.
-let socket = new WebSocket(\"ws://127.0.0.1:{}/chat?now=\" + Date.now())
+let socket = new WebSocket(\"ws://{}:{}/chat?now=\" + Date.now())
 socket.onopen = function(e) {{
 	//alert(\"[open] Connection established\")
 }}
@@ -324,7 +340,7 @@ window.addEventListener('beforeunload', (event) => {{
 <div style=\"display: block; position: fixed; background: rgba(0, 0, 255, 0.2); width: 100%\">Preview, save Markdown file to disk for live reload:</div>
 <iframe name=\"preview\"{} style=\"border:1px solid #eee; margin: 1px; width: 100%; height: 100%\"></iframe>
 </body>
-</html>\r\n", PORT, iframe_src).as_bytes(), &mut stream);
+</html>\r\n", host, PORT, iframe_src).as_bytes(), &mut stream);
 		}
 	}
 
@@ -411,10 +427,11 @@ window.addEventListener('beforeunload', (event) => {{
 		root_dir: &PathBuf,
 		cond_pair: Arc<(Mutex<Refresh>, Condvar)>,
 		start_file: Option<PathBuf>,
+		host: &str,
 	) {
 		match handle_read(&mut stream) {
 			ReadResult::GetRequest(path) => {
-				handle_write(stream, path, root_dir, start_file)
+				handle_write(stream, path, root_dir, start_file, host)
 			}
 			ReadResult::WebSocket(key) => {
 				handle_websocket(stream, key, cond_pair)
@@ -433,12 +450,14 @@ window.addEventListener('beforeunload', (event) => {{
 					let root_dir_clone = root_dir.clone();
 					let cond_pair_clone = cond_pair.clone();
 					let start_file_clone = start_file.clone();
+					let host = host_arg.value.clone();
 					thread::spawn(move || {
 						handle_client(
 							stream,
 							&root_dir_clone,
 							cond_pair_clone,
 							start_file_clone,
+							&host,
 						)
 					});
 				}
