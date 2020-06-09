@@ -263,7 +263,6 @@ Arguments:"
 		path: PathBuf,
 		root_dir: &PathBuf,
 		start_file: Option<PathBuf>,
-		host: &str,
 	) {
 		let full_path = root_dir.join(&path);
 		if full_path.is_file() {
@@ -322,7 +321,7 @@ Arguments:"
 			write(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html>
 <head><script>
 // Tag on time in order to distinguish different sockets.
-let socket = new WebSocket(\"ws://{}:{}/chat?now=\" + Date.now())
+let socket = new WebSocket(\"ws://\" + window.location.hostname + \":\" + window.location.port + \"/chat?now=\" + Date.now())
 socket.onopen = function(e) {{
 	//alert(\"[open] Connection established\")
 }}
@@ -335,12 +334,23 @@ socket.onerror = function(e) {{
 window.addEventListener('beforeunload', (event) => {{
     socket.close()
 }});
-</script></head>
-<body style=\"margin: 1px;\">
-<div style=\"display: block; position: fixed; background: rgba(0, 0, 255, 0.2); width: 100%\">Preview, save Markdown file to disk for live reload:</div>
+</script>
+<style type=\"text/css\">
+BODY {{
+	font-family: \"Helvetica Neue\", Helvetica, Arial, sans-serif;
+	margin: 0;
+}}
+.banner {{
+	background: rgba(0, 0, 255, 0.2);
+	position: fixed;
+}}
+</style>
+</head>
+<body>
+<div class=\"banner\">Preview, save Markdown file to disk for live reload:</div>
 <iframe name=\"preview\"{} style=\"border:1px solid #eee; margin: 1px; width: 100%; height: 100%\"></iframe>
 </body>
-</html>\r\n", host, PORT, iframe_src).as_bytes(), &mut stream);
+</html>\r\n", iframe_src).as_bytes(), &mut stream);
 		}
 	}
 
@@ -427,11 +437,10 @@ window.addEventListener('beforeunload', (event) => {{
 		root_dir: &PathBuf,
 		cond_pair: Arc<(Mutex<Refresh>, Condvar)>,
 		start_file: Option<PathBuf>,
-		host: &str,
 	) {
 		match handle_read(&mut stream) {
 			ReadResult::GetRequest(path) => {
-				handle_write(stream, path, root_dir, start_file, host)
+				handle_write(stream, path, root_dir, start_file)
 			}
 			ReadResult::WebSocket(key) => {
 				handle_websocket(stream, key, cond_pair)
@@ -450,14 +459,12 @@ window.addEventListener('beforeunload', (event) => {{
 					let root_dir_clone = root_dir.clone();
 					let cond_pair_clone = cond_pair.clone();
 					let start_file_clone = start_file.clone();
-					let host = host_arg.value.clone();
 					thread::spawn(move || {
 						handle_client(
 							stream,
 							&root_dir_clone,
 							cond_pair_clone,
 							start_file_clone,
-							&host,
 						)
 					});
 				}
