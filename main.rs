@@ -159,20 +159,7 @@ Arguments:"
 		return Ok(());
 	}
 
-	let listener =
-		TcpListener::bind(format!("{}:{}", host_arg.value, port_arg.value))
-			.unwrap_or_else(|e| {
-				panic!(
-					"Failed to bind TCP listening port {}:{}: {}",
-					host_arg.value, port_arg.value, e
-				)
-			});
-	println!(
-		"Listening for connections on {}:{}",
-		host_arg.value, port_arg.value
-	);
-
-	let cond_pair = Arc::new((
+	let fs_cond = Arc::new((
 		Mutex::new(Refresh {
 			index: 0,
 			file: None,
@@ -181,21 +168,56 @@ Arguments:"
 	));
 
 	let root_dir = PathBuf::from(&output_arg.value);
-	let fs_cond_pair_clone = cond_pair.clone();
+	let fs_cond_clone = fs_cond.clone();
 	let start_file = output_files.first().cloned();
 
-	let listening_thread = thread::spawn(move || {
+	let listening_thread = spawn_listening_thread(
+		&host_arg.value,
+		port_arg.value,
+		root_dir,
+		fs_cond,
+		start_file,
+	);
+
+	watch_fs(
+		&input_arg.value,
+		&output_arg.value,
+		markdown_extension,
+		&fs_cond_clone,
+	);
+
+	listening_thread
+		.join()
+		.expect("Failed joining listening thread.");
+
+	Ok(())
+}
+
+fn spawn_listening_thread(
+	host: &str,
+	port: i16,
+	root_dir: PathBuf,
+	fs_cond: Arc<(Mutex<Refresh>, Condvar)>,
+	start_file: Option<PathBuf>,
+) -> thread::JoinHandle<()> {
+	let listener = TcpListener::bind(format!("{}:{}", host, port))
+		.unwrap_or_else(|e| {
+			panic!("Failed to bind TCP listening port {}:{}: {}", host, port, e)
+		});
+	println!("Listening for connections on {}:{}", host, port);
+
+	thread::spawn(move || {
 		for stream in listener.incoming() {
 			match stream {
 				Ok(stream) => {
 					let root_dir_clone = root_dir.clone();
-					let cond_pair_clone = cond_pair.clone();
+					let fs_cond_pair_clone = fs_cond.clone();
 					let start_file_clone = start_file.clone();
 					thread::spawn(move || {
 						handle_client(
 							stream,
 							&root_dir_clone,
-							&cond_pair_clone,
+							&fs_cond_pair_clone,
 							start_file_clone,
 						)
 					});
@@ -203,45 +225,48 @@ Arguments:"
 				Err(e) => println!("WARNING: Unable to connect: {}", e),
 			}
 		}
-		println!("{:?}", start_file);
-	});
+	})
+}
 
-	let fs_thread = thread::spawn(move || {
-		let (tx, rx) = channel();
-		let mut watcher = watcher(tx, Duration::from_millis(200))
-			.unwrap_or_else(|e| {
-				panic!("Unable to create watcher: {}", e);
-			});
+fn watch_fs(
+	input_dir: &str,
+	output_dir: &str,
+	markdown_extension: &OsStr,
+	fs_cond: &Arc<(Mutex<Refresh>, Condvar)>,
+) {
+	let (tx, rx) = channel();
+	let mut watcher =
+		watcher(tx, Duration::from_millis(200)).unwrap_or_else(|e| {
+			panic!("Unable to create watcher: {}", e);
+		});
 
-		watcher
-			.watch(&input_arg.value, RecursiveMode::Recursive)
-			.unwrap_or_else(|e| {
-				panic!("Unable to watch {}: {}", &input_arg.value, e);
-			});
+	watcher
+		.watch(&input_dir, RecursiveMode::Recursive)
+		.unwrap_or_else(|e| {
+			panic!("Unable to watch {}: {}", &input_dir, e);
+		});
 
-		loop {
-			match rx.recv() {
-				Ok(event) => match event {
-					notify::DebouncedEvent::Write(mut path)
-					| notify::DebouncedEvent::Create(mut path) => {
-						path = path.canonicalize().unwrap_or_else(|e| {
-							panic!(
-								"Canonicalization of {} failed: {}",
-								path.display(),
-								e
-							)
-						});
-						let path_to_communicate = if is_file_with_extension(
-							&path,
-							&markdown_extension,
-						) {
-							match fs::create_dir(&output_arg.value) {
+	loop {
+		match rx.recv() {
+			Ok(event) => match event {
+				notify::DebouncedEvent::Write(mut path)
+				| notify::DebouncedEvent::Create(mut path) => {
+					path = path.canonicalize().unwrap_or_else(|e| {
+						panic!(
+							"Canonicalization of {} failed: {}",
+							path.display(),
+							e
+						)
+					});
+					let path_to_communicate =
+						if is_file_with_extension(&path, &markdown_extension) {
+							match fs::create_dir(&output_dir) {
 								Ok(_) => {}
 								Err(e) => {
 									if e.kind() != ErrorKind::AlreadyExists {
 										panic!(
 											"Failed creating \"{}\": {}.",
-											output_arg.value, e
+											output_dir, e
 										)
 									}
 								}
@@ -249,40 +274,31 @@ Arguments:"
 
 							Some(process_markdown_file(
 								&path,
-								&input_arg.value,
-								&output_arg.value,
+								&input_dir,
+								&output_dir,
 							))
 						} else {
 							None
 						};
 
-						let (mutex, cvar) = &*fs_cond_pair_clone;
+					let (mutex, cvar) = &**fs_cond;
 
-						let mut refresh = mutex.lock().unwrap_or_else(|e| {
-							panic!("Failed locking mutex: {}", e)
-						});
-						if path_to_communicate.is_some() {
-							refresh.file = path_to_communicate;
-						}
-						refresh.index += 1;
-						cvar.notify_all();
+					let mut refresh = mutex.lock().unwrap_or_else(|e| {
+						panic!("Failed locking mutex: {}", e)
+					});
+					if path_to_communicate.is_some() {
+						refresh.file = path_to_communicate;
 					}
-					_ => {
-						println!("Skipping {:?}", event);
-					}
-				},
-				Err(e) => panic!("Watch error: {}", e),
-			}
+					refresh.index += 1;
+					cvar.notify_all();
+				}
+				_ => {
+					println!("Skipping {:?}", event);
+				}
+			},
+			Err(e) => panic!("Watch error: {}", e),
 		}
-	});
-
-	listening_thread
-		.join()
-		.expect("Failed joining listening thread.");
-
-	fs_thread.join().expect("Failed joining FS thread.");
-
-	Ok(())
+	}
 }
 
 fn parse_args(
@@ -799,16 +815,14 @@ fn handle_websocket(
 fn handle_client(
 	mut stream: TcpStream,
 	root_dir: &PathBuf,
-	cond_pair: &Arc<(Mutex<Refresh>, Condvar)>,
+	fs_cond: &Arc<(Mutex<Refresh>, Condvar)>,
 	start_file: Option<PathBuf>,
 ) {
 	match handle_read(&mut stream) {
 		ReadResult::GetRequest(path) => {
 			handle_write(stream, &path, root_dir, start_file)
 		}
-		ReadResult::WebSocket(key) => {
-			handle_websocket(stream, &key, &cond_pair)
-		}
+		ReadResult::WebSocket(key) => handle_websocket(stream, &key, &fs_cond),
 	}
 }
 
