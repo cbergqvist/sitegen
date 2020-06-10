@@ -107,56 +107,11 @@ fn main() -> io::Result<()> {
 		value: false,
 	};
 
-	let mut first_arg = true;
-	let mut previous_arg = None;
-	for mut arg in env::args() {
-		// Skip executable arg itself.
-		if first_arg {
-			first_arg = false;
-			continue;
-		}
-
-		if let Some(prev) = previous_arg {
-			if prev == host_arg.name {
-				host_arg.value = arg;
-			} else if prev == input_arg.name {
-				input_arg.value = arg;
-			} else if prev == output_arg.name {
-				output_arg.value = arg;
-			} else if prev == port_arg.name {
-				port_arg.value = arg.parse::<i16>().unwrap_or_else(|e| {
-					panic!("Invalid port value: {}", e);
-				});
-			} else {
-				panic!("Unhandled key-value arg: {}", prev);
-			}
-			previous_arg = None;
-			continue;
-		}
-
-		if arg.len() < 3
-			|| arg.as_bytes()[0] != b'-'
-			|| arg.as_bytes()[1] != b'-'
-		{
-			panic!("Unexpected argument: {}", arg)
-		}
-
-		arg = arg.split_off(2);
-
-		if arg == help_arg.name {
-			help_arg.value = true;
-		} else if arg == host_arg.name
-			|| arg == input_arg.name
-			|| arg == output_arg.name
-			|| arg == port_arg.name
-		{
-			previous_arg = Some(arg);
-		} else if arg == watch_arg.name {
-			watch_arg.value = true;
-		} else {
-			panic!("Unsupported argument: {}", arg)
-		}
-	}
+	parse_args(
+		&mut vec![&mut help_arg, &mut watch_arg],
+		&mut vec![&mut port_arg],
+		&mut vec![&mut host_arg, &mut input_arg, &mut output_arg],
+	);
 
 	if help_arg.value {
 		println!(
@@ -328,6 +283,76 @@ Arguments:"
 	fs_thread.join().expect("Failed joining FS thread.");
 
 	Ok(())
+}
+
+fn parse_args(
+	bool_args: &mut Vec<&mut BoolArg>,
+	i16_args: &mut Vec<&mut I16Arg>,
+	string_args: &mut Vec<&mut StringArg>,
+) {
+	let mut first_arg = true;
+	let mut previous_arg = None;
+	'arg_loop: for mut arg in env::args() {
+		// Skip executable arg itself.
+		if first_arg {
+			first_arg = false;
+			continue;
+		}
+
+		if let Some(prev) = previous_arg {
+			for string_arg in &mut *string_args {
+				if prev == string_arg.name {
+					string_arg.value = arg;
+					previous_arg = None;
+					continue 'arg_loop;
+				}
+			}
+
+			for i16_arg in &mut *i16_args {
+				if prev == i16_arg.name {
+					i16_arg.value = arg.parse::<i16>().unwrap_or_else(|e| {
+						panic!("Invalid value for {}: {}", i16_arg.name, e);
+					});
+					previous_arg = None;
+					continue 'arg_loop;
+				}
+			}
+
+			panic!("Unhandled key-value arg: {}", prev);
+		}
+
+		if arg.len() < 3
+			|| arg.as_bytes()[0] != b'-'
+			|| arg.as_bytes()[1] != b'-'
+		{
+			panic!("Unexpected argument: {}", arg)
+		}
+
+		arg = arg.split_off(2);
+
+		for bool_arg in &mut *bool_args {
+			if arg == bool_arg.name {
+				bool_arg.value = true;
+				continue 'arg_loop;
+			}
+		}
+
+		for i16_arg in &*i16_args {
+			if arg == i16_arg.name {
+				previous_arg = Some(arg);
+				continue 'arg_loop;
+			}
+		}
+
+		for string_arg in &*string_args {
+			if arg == string_arg.name {
+				previous_arg = Some(arg);
+				continue 'arg_loop;
+			}
+		}
+
+		panic!("Unsupported argument: {}", arg)
+	}
 }
 
 fn is_file_with_extension(path: &PathBuf, extension: &OsStr) -> bool {
