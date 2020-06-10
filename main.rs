@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
-use std::io::{BufRead, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{
+	BufRead, BufReader, BufWriter, ErrorKind, Read, Seek, SeekFrom, Write,
+};
 use std::net::{TcpListener, TcpStream};
 use std::option::Option;
 use std::path::PathBuf;
@@ -425,15 +427,6 @@ fn process_markdown_file(
 	input_path: &str,
 	output_path: &str,
 ) -> PathBuf {
-	fn write_to_output(
-		output_buf: &mut io::BufWriter<&mut Vec<u8>>,
-		data: &[u8],
-	) {
-		output_buf.write_all(data).unwrap_or_else(|e| {
-			panic!("Failed writing \"{:?}\" to to buffer: {}.", data, e)
-		});
-	}
-
 	let timer = Instant::now();
 	let input_file = fs::File::open(&input_file_name).unwrap_or_else(|e| {
 		panic!("Failed opening \"{}\": {}.", &input_file_name.display(), e)
@@ -446,7 +439,7 @@ fn process_markdown_file(
 		)
 	});
 
-	let mut reader = io::BufReader::new(input_file);
+	let mut reader = BufReader::new(input_file);
 
 	let front_matter =
 		parse_front_matter(&input_file_name_str, &mut reader, input_path);
@@ -463,54 +456,9 @@ fn process_markdown_file(
 			});
 	let parser = Parser::new(&input_file_str);
 	let mut output = Vec::new();
-	let mut output_buf = io::BufWriter::new(&mut output);
-	write_to_output(
-		&mut output_buf,
-		b"<html>
-<head>
-<title>",
-	);
-	write_to_output(&mut output_buf, front_matter.title.as_bytes());
-	write_to_output(
-		&mut output_buf,
-		b"</title>
-<style type=\"text/css\">
-.container {
-	max-width: 38rem;
-	margin-left: auto;
-	margin-right: auto;
-	font-family: \"Helvetica Neue\", Helvetica, Arial, sans-serif;
-}
-TIME {
-	color: rgb(154, 154, 154);
-}
-HR {
-	border: 0;
-	border-top: 1px solid #eee;
-}
-</style>
-</head>
-<body>
-<div class=\"container\">
-<time datetime=\"",
-	);
-	write_to_output(&mut output_buf, front_matter.date.as_bytes());
-	write_to_output(&mut output_buf, b"\">");
-	write_to_output(&mut output_buf, front_matter.date.as_bytes());
-	write_to_output(&mut output_buf, b"</time>");
-	html::write_html(&mut output_buf, parser).unwrap_or_else(|e| {
-		panic!(
-			"Failed converting Markdown file \"{}\" to HTML: {}.",
-			&input_file_name.display(),
-			e
-		)
-	});
-	write_to_output(
-		&mut output_buf,
-		b"</div>
-</body>
-</html>",
-	);
+	let mut output_buf = BufWriter::new(&mut output);
+
+	write_html_page(&mut output_buf, &front_matter, parser, input_file_name);
 
 	let mut output_file_name = String::from(output_path);
 	if input_file_name.starts_with(input_path) {
@@ -566,6 +514,67 @@ HR {
 	);
 
 	PathBuf::from(&output_file_name[output_path.len()..])
+}
+
+fn write_html_page(
+	mut output_buf: &mut BufWriter<&mut Vec<u8>>,
+	front_matter: &FrontMatter,
+	parser: Parser,
+	input_file_name: &PathBuf,
+) {
+	fn write_to_output(output_buf: &mut BufWriter<&mut Vec<u8>>, data: &[u8]) {
+		output_buf.write_all(data).unwrap_or_else(|e| {
+			panic!("Failed writing \"{:?}\" to to buffer: {}.", data, e)
+		});
+	}
+
+	write_to_output(
+		&mut output_buf,
+		b"<html>
+<head>
+<title>",
+	);
+	write_to_output(&mut output_buf, front_matter.title.as_bytes());
+	write_to_output(
+		&mut output_buf,
+		b"</title>
+<style type=\"text/css\">
+.container {
+	max-width: 38rem;
+	margin-left: auto;
+	margin-right: auto;
+	font-family: \"Helvetica Neue\", Helvetica, Arial, sans-serif;
+}
+TIME {
+	color: rgb(154, 154, 154);
+}
+HR {
+	border: 0;
+	border-top: 1px solid #eee;
+}
+</style>
+</head>
+<body>
+<div class=\"container\">
+<time datetime=\"",
+	);
+	write_to_output(&mut output_buf, front_matter.date.as_bytes());
+	write_to_output(&mut output_buf, b"\">");
+	write_to_output(&mut output_buf, front_matter.date.as_bytes());
+	write_to_output(&mut output_buf, b"</time>");
+	html::write_html(&mut output_buf, parser).unwrap_or_else(|e| {
+		panic!(
+			"Failed converting Markdown file \"{}\" to HTML: {}.",
+			&input_file_name.display(),
+			e
+		)
+	});
+	write_to_output(
+		&mut output_buf,
+		b"</div>
+</body>
+</html>",
+	);
 }
 
 fn handle_read(stream: &mut TcpStream) -> ReadResult {
@@ -828,7 +837,7 @@ fn handle_client(
 
 fn parse_front_matter(
 	input_file_name: &str,
-	reader: &mut io::BufReader<fs::File>,
+	reader: &mut BufReader<fs::File>,
 	input_path: &str,
 ) -> FrontMatter {
 	const MAX_FRONT_MATTER_LINES: u8 = 16;
