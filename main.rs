@@ -15,6 +15,8 @@ use pulldown_cmark::{html, Parser};
 
 use notify::{watcher, RecursiveMode, Watcher};
 
+use yaml_rust::YamlLoader;
+
 struct FrontMatter {
 	title: String,
 	date: String,
@@ -60,6 +62,16 @@ impl fmt::Display for StringArg {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "-{} {}", self.name, self.help)
 	}
+}
+
+struct Refresh {
+	index: u32,
+	file: Option<PathBuf>,
+}
+
+enum ReadResult {
+	GetRequest(PathBuf),
+	WebSocket(String),
 }
 
 fn main() -> io::Result<()> {
@@ -205,11 +217,6 @@ Arguments:"
 		host_arg.value, port_arg.value
 	);
 
-	struct Refresh {
-		index: u32,
-		file: Option<PathBuf>,
-	}
-
 	let cond_pair = Arc::new((
 		Mutex::new(Refresh {
 			index: 0,
@@ -217,269 +224,6 @@ Arguments:"
 		}),
 		Condvar::new(),
 	));
-
-	enum ReadResult {
-		GetRequest(PathBuf),
-		WebSocket(String),
-	}
-
-	fn handle_read(stream: &mut TcpStream) -> ReadResult {
-		let mut buf = [0u8; 4096];
-		match stream.read(&mut buf) {
-			Ok(size) => {
-				if size == buf.len() {
-					panic!(
-						"Request sizes as large as {} are not supported.",
-						size
-					)
-				}
-
-				let req_str = String::from_utf8_lossy(&buf);
-				println!("Request (size: {}):\n{}", size, req_str);
-				let mut lines = req_str.lines();
-				if let Some(first_line) = lines.next() {
-					let mut components = first_line.split(' ');
-					if let Some(method) = components.next() {
-						if method == "GET" {
-							if let Some(path) = components.next() {
-								for line in lines {
-									let mut components = line.split(' ');
-									if let Some(component) = components.next() {
-										if component == "Sec-WebSocket-Key:" {
-											if let Some(websocket_key) =
-												components.next()
-											{
-												return ReadResult::WebSocket(
-													String::from(websocket_key),
-												);
-											}
-										}
-									}
-								}
-
-								return ReadResult::GetRequest(PathBuf::from(
-									// Strip leading root slash.
-									&path[1..],
-								));
-							} else {
-								panic!("Missing path in: {}", first_line)
-							}
-						} else {
-							panic!(
-								"Unsupported method \"{}\", line: {}",
-								method, first_line
-							)
-						}
-					} else {
-						panic!(
-							"Missing components in first HTTP request line: {}",
-							first_line
-						)
-					}
-				} else {
-					panic!("Missing lines in HTTP request.")
-				}
-			}
-			Err(e) => panic!("WARNING: Unable to read stream: {}", e),
-		}
-	}
-
-	fn write(bytes: &[u8], stream: &mut TcpStream) {
-		match stream.write_all(bytes) {
-			Ok(()) => println!("Wrote {} bytes.", bytes.len()),
-			Err(e) => println!("WARNING: Failed sending response: {}", e),
-		}
-	}
-
-	fn handle_write(
-		mut stream: TcpStream,
-		path: PathBuf,
-		root_dir: &PathBuf,
-		start_file: Option<PathBuf>,
-	) {
-		let full_path = root_dir.join(&path);
-		if full_path.is_file() {
-			println!("Opening: {}", full_path.display());
-			match fs::File::open(&full_path) {
-				Ok(mut input_file) => {
-					write(b"HTTP/1.1 200 OK\r\n", &mut stream);
-					if let Some(extension) = path.extension() {
-						let extension = extension.to_string_lossy();
-						if extension == "html" {
-							write(format!("Content-Type: text/{}; charset=UTF-8\r\n\r\n", extension).as_bytes(), &mut stream);
-						}
-					}
-					let mut buf = [0u8; 64 * 1024];
-					loop {
-						let size =
-							input_file.read(&mut buf).unwrap_or_else(|e| {
-								panic!(
-									"Failed reading from {}: {}",
-									full_path.display(),
-									e
-								);
-							});
-						if size < 1 {
-							break;
-						}
-
-						write(&buf[0..size + 1], &mut stream);
-					}
-				}
-				Err(e) => {
-					match e.kind() {
-						ErrorKind::NotFound => write(
-							format!("HTTP/1.1 404 Not found\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>Couldn't find: {}</body></html>\r\n", full_path.display()).as_bytes(),
-							&mut stream,
-						),
-						_ => write(
-							format!("HTTP/1.1 500 Error\r\n{}", e)
-								.as_bytes(),
-							&mut stream,
-						),
-					}
-				}
-			}
-		} else {
-			println!("Requested path is not a file, returning index.");
-			let iframe_src = if let Some(path) = start_file {
-				let mut s = String::from(" src=\"");
-				s.push_str(&path.to_string_lossy());
-				s.push_str("\"");
-				s
-			} else {
-				String::from("")
-			};
-
-			write(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html>
-<head><script>
-// Tag on time in order to distinguish different sockets.
-let socket = new WebSocket(\"ws://\" + window.location.hostname + \":\" + window.location.port + \"/chat?now=\" + Date.now())
-socket.onopen = function(e) {{
-	//alert(\"[open] Connection established\")
-}}
-socket.onmessage = function(e) {{
-	e.data.text().then(text => window.frames['preview'].location.href = text)
-}}
-socket.onerror = function(e) {{
-	alert(`Socket error: ${{e}}`)
-}}
-window.addEventListener('beforeunload', (event) => {{
-    socket.close()
-}});
-</script>
-<style type=\"text/css\">
-BODY {{
-	font-family: \"Helvetica Neue\", Helvetica, Arial, sans-serif;
-	margin: 0;
-}}
-.banner {{
-	background: rgba(0, 0, 255, 0.2);
-	position: fixed;
-}}
-</style>
-</head>
-<body>
-<div class=\"banner\">Preview, save Markdown file to disk for live reload:</div>
-<iframe name=\"preview\"{} style=\"border:1px solid #eee; margin: 1px; width: 100%; height: 100%\"></iframe>
-</body>
-</html>\r\n", iframe_src).as_bytes(), &mut stream);
-		}
-	}
-
-	fn handle_websocket(
-		mut stream: TcpStream,
-		key: String,
-		cond_pair: Arc<(Mutex<Refresh>, Condvar)>,
-	) {
-		let mut m = sha1::Sha1::new();
-		m.update(key.as_bytes());
-		m.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
-		let accept_value = base64::encode(m.digest().bytes());
-
-		write(format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\nSec-WebSocket-Protocol: chat\r\n\r\n", accept_value).as_bytes(), &mut stream);
-
-		stream.set_nonblocking(true).expect(
-			"Failed changing WebSocket TCP connection to nonblocking mode.",
-		);
-
-		let (mutex, cvar) = &*cond_pair;
-		loop {
-			let last_index = mutex
-				.lock()
-				.unwrap_or_else(|e| panic!("Failed locking mutex: {}", e))
-				.index;
-			let (guard, result) = cvar
-				.wait_timeout_while(
-					mutex.lock().unwrap_or_else(|e| {
-						panic!("Failed locking mutex: {}", e)
-					}),
-					Duration::from_millis(50),
-					|pending| pending.index == last_index,
-				)
-				.unwrap_or_else(|e| panic!("Failed waiting: {}", e));
-
-			// Based on WebSocket RFC - https://tools.ietf.org/html/rfc6455
-			const FINAL_FRAME: u8 = 0b1000_0000;
-			const BINARY_OPCODE: u8 = 0b0000_0010;
-			const CLOSE_OPCODE: u8 = 0b0000_1000;
-			if result.timed_out() {
-				let mut buf = [0u8; 16];
-				let size =
-					stream.read(&mut buf).unwrap_or_else(|e| match e.kind() {
-						ErrorKind::WouldBlock => 0,
-						_ => panic!("Failed reading: {}", e),
-					});
-				if size > 0 {
-					// Is it a close frame?
-					const CLOSE_FRAME: u8 = FINAL_FRAME | CLOSE_OPCODE;
-					if buf[0] & 0b1000_1111 == CLOSE_FRAME {
-						println!(
-							"Received WebSocket connection close, responding in kind."
-						);
-						const LENGTH: u8 = 0;
-						let frame = [CLOSE_FRAME, LENGTH];
-						write(&frame, &mut stream);
-						return;
-					} else {
-						println!("WARNING: Received unhandled packet: {:?} ({} bytes)", &buf[0..size], size);
-					}
-				}
-			} else {
-				// Not a time-out? Then we got a proper file change notification!
-				// Time to notify the browser.
-				let message = if let Some(path) = &guard.file {
-					String::from(path.to_string_lossy())
-				} else {
-					String::from("")
-				};
-				if message.len() > 125 {
-					panic!(
-						"Don't support variable-length WebSocket frames yet."
-					)
-				}
-				let frame = [FINAL_FRAME | BINARY_OPCODE, message.len() as u8];
-				write(&frame, &mut stream);
-				write(message.as_bytes(), &mut stream);
-			}
-		}
-	}
-
-	fn handle_client(
-		mut stream: TcpStream,
-		root_dir: &PathBuf,
-		cond_pair: Arc<(Mutex<Refresh>, Condvar)>,
-		start_file: Option<PathBuf>,
-	) {
-		match handle_read(&mut stream) {
-			ReadResult::GetRequest(path) => {
-				handle_write(stream, path, root_dir, start_file)
-			}
-			ReadResult::WebSocket(key) => {
-				handle_websocket(stream, key, cond_pair)
-			}
-		}
-	}
 
 	let root_dir = PathBuf::from(&output_arg.value);
 	let fs_cond_pair_clone = cond_pair.clone();
@@ -496,7 +240,7 @@ BODY {{
 						handle_client(
 							stream,
 							&root_dir_clone,
-							cond_pair_clone,
+							&cond_pair_clone,
 							start_file_clone,
 						)
 					});
@@ -783,11 +527,273 @@ HR {
 	PathBuf::from(&output_file_name[output_path.len()..])
 }
 
+fn handle_read(stream: &mut TcpStream) -> ReadResult {
+	let mut buf = [0_u8; 4096];
+	match stream.read(&mut buf) {
+		Ok(size) => {
+			if size == buf.len() {
+				panic!("Request sizes as large as {} are not supported.", size)
+			}
+
+			let req_str = String::from_utf8_lossy(&buf);
+			println!("Request (size: {}):\n{}", size, req_str);
+			let mut lines = req_str.lines();
+			if let Some(first_line) = lines.next() {
+				let mut components = first_line.split(' ');
+				if let Some(method) = components.next() {
+					if method == "GET" {
+						if let Some(path) = components.next() {
+							for line in lines {
+								let mut components = line.split(' ');
+								if let Some(component) = components.next() {
+									if component == "Sec-WebSocket-Key:" {
+										if let Some(websocket_key) =
+											components.next()
+										{
+											return ReadResult::WebSocket(
+												String::from(websocket_key),
+											);
+										}
+									}
+								}
+							}
+
+							ReadResult::GetRequest(PathBuf::from(
+								// Strip leading root slash.
+								&path[1..],
+							))
+						} else {
+							panic!("Missing path in: {}", first_line)
+						}
+					} else {
+						panic!(
+							"Unsupported method \"{}\", line: {}",
+							method, first_line
+						)
+					}
+				} else {
+					panic!(
+						"Missing components in first HTTP request line: {}",
+						first_line
+					)
+				}
+			} else {
+				panic!("Missing lines in HTTP request.")
+			}
+		}
+		Err(e) => panic!("WARNING: Unable to read stream: {}", e),
+	}
+}
+
+fn write(bytes: &[u8], stream: &mut TcpStream) {
+	match stream.write_all(bytes) {
+		Ok(()) => println!("Wrote {} bytes.", bytes.len()),
+		Err(e) => println!("WARNING: Failed sending response: {}", e),
+	}
+}
+
+fn handle_write(
+	mut stream: TcpStream,
+	path: &PathBuf,
+	root_dir: &PathBuf,
+	start_file: Option<PathBuf>,
+) {
+	let full_path = root_dir.join(&path);
+	if full_path.is_file() {
+		println!("Opening: {}", full_path.display());
+		match fs::File::open(&full_path) {
+			Ok(mut input_file) => {
+				write(b"HTTP/1.1 200 OK\r\n", &mut stream);
+				if let Some(extension) = path.extension() {
+					let extension = extension.to_string_lossy();
+					if extension == "html" {
+						write(format!("Content-Type: text/{}; charset=UTF-8\r\n\r\n", extension).as_bytes(), &mut stream);
+					}
+				}
+				let mut buf = [0_u8; 64 * 1024];
+				loop {
+					let size =
+						input_file.read(&mut buf).unwrap_or_else(|e| {
+							panic!(
+								"Failed reading from {}: {}",
+								full_path.display(),
+								e
+							);
+						});
+					if size < 1 {
+						break;
+					}
+
+					write(&buf[0..=size], &mut stream);
+				}
+			}
+			Err(e) => {
+				match e.kind() {
+					ErrorKind::NotFound => write(
+						format!("HTTP/1.1 404 Not found\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>Couldn't find: {}</body></html>\r\n", full_path.display()).as_bytes(),
+						&mut stream,
+					),
+					_ => write(
+						format!("HTTP/1.1 500 Error\r\n{}", e)
+							.as_bytes(),
+						&mut stream,
+					),
+				}
+			}
+		}
+	} else {
+		println!("Requested path is not a file, returning index.");
+		let iframe_src = if let Some(path) = start_file {
+			let mut s = String::from(" src=\"");
+			s.push_str(&path.to_string_lossy());
+			s.push_str("\"");
+			s
+		} else {
+			String::from("")
+		};
+
+		write(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html>
+<head><script>
+// Tag on time in order to distinguish different sockets.
+let socket = new WebSocket(\"ws://\" + window.location.hostname + \":\" + window.location.port + \"/chat?now=\" + Date.now())
+socket.onopen = function(e) {{
+//alert(\"[open] Connection established\")
+}}
+socket.onmessage = function(e) {{
+e.data.text().then(text => window.frames['preview'].location.href = text)
+}}
+socket.onerror = function(e) {{
+alert(`Socket error: ${{e}}`)
+}}
+window.addEventListener('beforeunload', (event) => {{
+socket.close()
+}});
+</script>
+<style type=\"text/css\">
+BODY {{
+font-family: \"Helvetica Neue\", Helvetica, Arial, sans-serif;
+margin: 0;
+}}
+.banner {{
+background: rgba(0, 0, 255, 0.2);
+position: fixed;
+}}
+</style>
+</head>
+<body>
+<div class=\"banner\">Preview, save Markdown file to disk for live reload:</div>
+<iframe name=\"preview\"{} style=\"border:1px solid #eee; margin: 1px; width: 100%; height: 100%\"></iframe>
+</body>
+</html>\r\n", iframe_src).as_bytes(), &mut stream);
+	}
+}
+
+fn handle_websocket(
+	mut stream: TcpStream,
+	key: &str,
+	cond_pair: &Arc<(Mutex<Refresh>, Condvar)>,
+) {
+	// Based on WebSocket RFC - https://tools.ietf.org/html/rfc6455
+	const FINAL_FRAME: u8 = 0b1000_0000;
+	const BINARY_OPCODE: u8 = 0b0000_0010;
+	const CLOSE_OPCODE: u8 = 0b0000_1000;
+	const CLOSE_HEADER: u8 = FINAL_FRAME | CLOSE_OPCODE;
+	const ZERO_LENGTH: u8 = 0;
+	const CLOSE_FRAME: [u8; 2] = [CLOSE_HEADER, ZERO_LENGTH];
+
+	let mut m = sha1::Sha1::new();
+	m.update(key.as_bytes());
+	m.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+	let accept_value = base64::encode(m.digest().bytes());
+
+	write(format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\nSec-WebSocket-Protocol: chat\r\n\r\n", accept_value).as_bytes(), &mut stream);
+
+	stream.set_nonblocking(true).expect(
+		"Failed changing WebSocket TCP connection to nonblocking mode.",
+	);
+
+	let (mutex, cvar) = &**cond_pair;
+	loop {
+		let last_index = mutex
+			.lock()
+			.unwrap_or_else(|e| panic!("Failed locking mutex: {}", e))
+			.index;
+		let (guard, result) = cvar
+			.wait_timeout_while(
+				mutex
+					.lock()
+					.unwrap_or_else(|e| panic!("Failed locking mutex: {}", e)),
+				Duration::from_millis(50),
+				|pending| pending.index == last_index,
+			)
+			.unwrap_or_else(|e| panic!("Failed waiting: {}", e));
+
+		if result.timed_out() {
+			let mut buf = [0_u8; 16];
+			let size =
+				stream.read(&mut buf).unwrap_or_else(|e| match e.kind() {
+					ErrorKind::WouldBlock => 0,
+					_ => panic!("Failed reading: {}", e),
+				});
+			if size > 0 {
+				// Is it a close frame?
+				if buf[0] & 0b1000_1111 == CLOSE_HEADER {
+					println!(
+						"Received WebSocket connection close, responding in kind."
+					);
+					write(&CLOSE_FRAME, &mut stream);
+					return;
+				} else {
+					println!(
+						"WARNING: Received unhandled packet: {:?} ({} bytes)",
+						&buf[0..size],
+						size
+					);
+				}
+			}
+		} else {
+			// Not a time-out? Then we got a proper file change notification!
+			// Time to notify the browser.
+			let message = if let Some(path) = &guard.file {
+				String::from(path.to_string_lossy())
+			} else {
+				String::from("")
+			};
+			let length = message.len();
+			if length > 125 {
+				panic!("Don't support variable-length WebSocket frames yet.")
+			}
+
+			let frame = [FINAL_FRAME | BINARY_OPCODE, length.to_le_bytes()[0]];
+			write(&frame, &mut stream);
+			write(message.as_bytes(), &mut stream);
+		}
+	}
+}
+
+fn handle_client(
+	mut stream: TcpStream,
+	root_dir: &PathBuf,
+	cond_pair: &Arc<(Mutex<Refresh>, Condvar)>,
+	start_file: Option<PathBuf>,
+) {
+	match handle_read(&mut stream) {
+		ReadResult::GetRequest(path) => {
+			handle_write(stream, &path, root_dir, start_file)
+		}
+		ReadResult::WebSocket(key) => {
+			handle_websocket(stream, &key, &cond_pair)
+		}
+	}
+}
+
 fn parse_front_matter(
 	input_file_name: &str,
 	reader: &mut io::BufReader<fs::File>,
 	input_path: &str,
 ) -> FrontMatter {
+	const MAX_FRONT_MATTER_LINES: u8 = 16;
+
 	let mut result = FrontMatter {
 		title: input_file_name[input_path.len() + 1..input_file_name.len() - 3]
 			.to_owned(),
@@ -817,10 +823,7 @@ fn parse_front_matter(
 		return result;
 	}
 
-	use yaml_rust::YamlLoader;
-
 	let mut front_matter_str = String::new();
-	const MAX_FRONT_MATTER_LINES: u8 = 16;
 	let mut line_count = 0;
 	loop {
 		line.clear();
