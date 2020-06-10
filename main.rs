@@ -32,6 +32,12 @@ struct BoolArg {
 	value: bool,
 }
 
+struct I16Arg {
+	name: &'static str,
+	help: &'static str,
+	value: i16,
+}
+
 struct StringArg {
 	name: &'static str,
 	help: &'static str,
@@ -39,6 +45,12 @@ struct StringArg {
 }
 
 impl fmt::Display for BoolArg {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "-{} {}", self.name, self.help)
+	}
+}
+
+impl fmt::Display for I16Arg {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "-{} {}", self.name, self.help)
 	}
@@ -72,6 +84,11 @@ fn main() -> io::Result<()> {
 		help: "Set output directory to write to.",
 		value: String::from("./output"),
 	};
+	let mut port_arg = I16Arg {
+		name: "port",
+		help: "Set port to bind to.",
+		value: 8090,
+	};
 	let mut watch_arg = BoolArg {
 		name: "watch",
 		help: "Run indefinitely, watching input directory for changes.",
@@ -94,6 +111,12 @@ fn main() -> io::Result<()> {
 				input_arg.value = arg;
 			} else if prev == output_arg.name {
 				output_arg.value = arg;
+			} else if prev == port_arg.name {
+				port_arg.value = arg.parse::<i16>().unwrap_or_else(|e| {
+					panic!("Invalid port value: {}", e);
+				});
+			} else {
+				panic!("Unhandled key-value arg: {}", prev);
 			}
 			previous_arg = None;
 			continue;
@@ -113,6 +136,7 @@ fn main() -> io::Result<()> {
 		} else if arg == host_arg.name
 			|| arg == input_arg.name
 			|| arg == output_arg.name
+			|| arg == port_arg.name
 		{
 			previous_arg = Some(arg);
 		} else if arg == watch_arg.name {
@@ -135,6 +159,7 @@ Arguments:"
 		println!("{}", host_arg);
 		println!("{}", input_arg);
 		println!("{}", output_arg);
+		println!("{}", port_arg);
 		println!("{}", watch_arg);
 
 		return Ok(());
@@ -167,10 +192,18 @@ Arguments:"
 		return Ok(());
 	}
 
-	const PORT: i16 = 8090;
-	let listener = TcpListener::bind(format!("{}:{}", host_arg.value, PORT))
-		.unwrap_or_else(|e| panic!("Failed to bind TCP listening port: {}", e));
-	println!("Listening for connections on {}:{}", host_arg.value, PORT);
+	let listener =
+		TcpListener::bind(format!("{}:{}", host_arg.value, port_arg.value))
+			.unwrap_or_else(|e| {
+				panic!(
+					"Failed to bind TCP listening port {}:{}: {}",
+					host_arg.value, port_arg.value, e
+				)
+			});
+	println!(
+		"Listening for connections on {}:{}",
+		host_arg.value, port_arg.value
+	);
 
 	struct Refresh {
 		index: u32,
