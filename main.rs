@@ -188,6 +188,7 @@ Arguments:"
 		&fs_cond_clone,
 	);
 
+	// We never really get here as we loop infinitely until Ctrl+C.
 	listening_thread
 		.join()
 		.expect("Failed joining listening thread.");
@@ -577,7 +578,7 @@ HR {
 	);
 }
 
-fn handle_read(stream: &mut TcpStream) -> ReadResult {
+fn handle_read(stream: &mut TcpStream) -> Option<ReadResult> {
 	let mut buf = [0_u8; 4096];
 	match stream.read(&mut buf) {
 		Ok(size) => {
@@ -586,6 +587,13 @@ fn handle_read(stream: &mut TcpStream) -> ReadResult {
 			}
 
 			let req_str = String::from_utf8_lossy(&buf);
+			if req_str.len() == 0 {
+				// Saw this occur once before adding the code path to avoid
+				// panic! further down. Not sure about the cause of it.
+				println!("WARNING: Invalid request? {:?}", &buf[0..=32]);
+				return None;
+			}
+
 			println!("Request (size: {}):\n{}", size, req_str);
 			let mut lines = req_str.lines();
 			if let Some(first_line) = lines.next() {
@@ -600,18 +608,20 @@ fn handle_read(stream: &mut TcpStream) -> ReadResult {
 										if let Some(websocket_key) =
 											components.next()
 										{
-											return ReadResult::WebSocket(
-												String::from(websocket_key),
+											return Some(
+												ReadResult::WebSocket(
+													String::from(websocket_key),
+												),
 											);
 										}
 									}
 								}
 							}
 
-							ReadResult::GetRequest(PathBuf::from(
+							Some(ReadResult::GetRequest(PathBuf::from(
 								// Strip leading root slash.
 								&path[1..],
-							))
+							)))
 						} else {
 							panic!("Missing path in: {}", first_line)
 						}
@@ -827,11 +837,15 @@ fn handle_client(
 	fs_cond: &Arc<(Mutex<Refresh>, Condvar)>,
 	start_file: Option<PathBuf>,
 ) {
-	match handle_read(&mut stream) {
-		ReadResult::GetRequest(path) => {
-			handle_write(stream, &path, root_dir, start_file)
+	if let Some(result) = handle_read(&mut stream) {
+		match result {
+			ReadResult::GetRequest(path) => {
+				handle_write(stream, &path, root_dir, start_file)
+			}
+			ReadResult::WebSocket(key) => {
+				handle_websocket(stream, &key, &fs_cond)
+			}
 		}
-		ReadResult::WebSocket(key) => handle_websocket(stream, &key, &fs_cond),
 	}
 }
 
