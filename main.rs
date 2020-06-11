@@ -141,15 +141,20 @@ Arguments:"
 		return Ok(());
 	}
 
-	let markdown_extension = OsStr::new("md");
+	let input_dir = PathBuf::from(&input_arg.value);
+	let output_dir = PathBuf::from(&output_arg.value);
 
-	let markdown_files =
-		get_markdown_files(&input_arg.value, markdown_extension);
+	let markdown_extension = OsStr::new("md");
 
 	let mut output_files = Vec::new();
 
+	let markdown_files = get_markdown_files(&input_dir, markdown_extension);
+
 	if markdown_files.is_empty() {
-		println!("Found no valid file entries under \"{}\".", input_arg.value);
+		println!(
+			"Found no valid file entries under \"{}\".",
+			input_dir.display()
+		);
 	} else {
 		fs::create_dir(&output_arg.value).unwrap_or_else(|e| {
 			panic!("Failed creating \"{}\": {}.", output_arg.value, e)
@@ -158,9 +163,8 @@ Arguments:"
 		for file_name in &markdown_files {
 			output_files.push(process_markdown_file(
 				&file_name,
-				&input_arg.value,
-				&output_arg.value,
-				markdown_extension,
+				&input_dir,
+				&output_dir,
 			))
 		}
 	}
@@ -192,12 +196,7 @@ Arguments:"
 		start_file,
 	);
 
-	watch_fs(
-		&input_arg.value,
-		&output_arg.value,
-		markdown_extension,
-		&fs_cond_clone,
-	);
+	watch_fs(&input_dir, &output_dir, markdown_extension, &fs_cond_clone);
 
 	// We never really get here as we loop infinitely until Ctrl+C.
 	listening_thread
@@ -243,8 +242,8 @@ fn spawn_listening_thread(
 }
 
 fn watch_fs(
-	input_dir: &str,
-	output_dir: &str,
+	input_dir: &PathBuf,
+	output_dir: &PathBuf,
 	markdown_extension: &OsStr,
 	fs_cond: &Arc<(Mutex<Refresh>, Condvar)>,
 ) {
@@ -257,7 +256,7 @@ fn watch_fs(
 	watcher
 		.watch(&input_dir, RecursiveMode::Recursive)
 		.unwrap_or_else(|e| {
-			panic!("Unable to watch {}: {}", &input_dir, e);
+			panic!("Unable to watch {}: {}", input_dir.display(), e);
 		});
 
 	loop {
@@ -280,7 +279,8 @@ fn watch_fs(
 									if e.kind() != ErrorKind::AlreadyExists {
 										panic!(
 											"Failed creating \"{}\": {}.",
-											output_dir, e
+											output_dir.display(),
+											e
 										)
 									}
 								}
@@ -290,7 +290,6 @@ fn watch_fs(
 								&path,
 								&input_dir,
 								&output_dir,
-								markdown_extension,
 							))
 						} else {
 							None
@@ -393,44 +392,71 @@ fn is_file_with_extension(path: &PathBuf, extension: &OsStr) -> bool {
 }
 
 fn get_markdown_files(
-	input_dir: &str,
+	input_dir: &PathBuf,
 	markdown_extension: &OsStr,
 ) -> Vec<PathBuf> {
 	let entries = fs::read_dir(input_dir).unwrap_or_else(|e| {
-		panic!("Failed reading paths from \"{}\": {}.", input_dir, e)
+		panic!(
+			"Failed reading paths from \"{}\": {}.",
+			input_dir.display(),
+			e
+		)
 	});
 	let mut files = Vec::new();
 	for entry in entries {
 		match entry {
 			Ok(entry) => {
 				let path = entry.path();
-				if is_file_with_extension(&path, markdown_extension) {
-					if let Ok(ft) = entry.file_type() {
-						if ft.is_file() {
+				if let Ok(ft) = entry.file_type() {
+					if ft.is_file() {
+						if is_file_with_extension(&path, markdown_extension) {
 							files.push(path);
 							println!(
 								"Markdown!: \"{}\"",
 								entry.path().display()
 							);
 						} else {
-							println!("WARNING: Non-file named .md?");
+							println!(
+								"Skipping non-.md file: \"{}\"",
+								entry.path().display()
+							);
+						}
+					} else if ft.is_dir() {
+						if path
+							.file_name()
+							.unwrap_or_else(|| {
+								panic!(
+									"Directory without filename?: {}",
+									path.display()
+								)
+							})
+							.to_string_lossy()
+							.starts_with("_")
+						{
+							println!(
+								"Skipping '_'-prefixed dir: {}",
+								path.display()
+							);
+						} else {
+							let mut subdir_files =
+								get_markdown_files(&path, markdown_extension);
+							files.append(&mut subdir_files);
 						}
 					} else {
-						println!(
-							"WARNING: Failed getting file type of {}.",
-							entry.path().display()
-						);
+						println!("Skipping non-file/dir {}", path.display());
 					}
 				} else {
 					println!(
-						"Skipping non-.md file: \"{}\"",
+						"WARNING: Failed getting file type of {}.",
 						entry.path().display()
 					);
 				}
 			}
-			Err(e) => {
-				println!("WARNING: Invalid entry in \"{}\": {}", input_dir, e)
-			}
+			Err(e) => println!(
+				"WARNING: Invalid entry in \"{}\": {}",
+				input_dir.display(),
+				e
+			),
 		}
 	}
 
@@ -438,27 +464,18 @@ fn get_markdown_files(
 }
 
 fn process_markdown_file(
-	input_file_name: &PathBuf,
-	input_dir: &str,
-	output_dir: &str,
-	markdown_extension: &OsStr,
+	input_file_path: &PathBuf,
+	root_input_dir: &PathBuf,
+	root_output_dir: &PathBuf,
 ) -> PathBuf {
 	let timer = Instant::now();
-	let input_file = fs::File::open(&input_file_name).unwrap_or_else(|e| {
-		panic!("Failed opening \"{}\": {}.", &input_file_name.display(), e)
-	});
-
-	let input_file_name_str = input_file_name.to_str().unwrap_or_else(|| {
-		panic!(
-			"Failed converting \"{}\" to str.",
-			&input_file_name.display()
-		)
+	let input_file = fs::File::open(&input_file_path).unwrap_or_else(|e| {
+		panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
 	});
 
 	let mut reader = BufReader::new(input_file);
 
-	let front_matter =
-		parse_front_matter(&input_file_name_str, &mut reader, input_dir);
+	let front_matter = parse_front_matter(&input_file_path, &mut reader);
 	let mut input_file_str = String::new();
 	let _size =
 		reader
@@ -466,7 +483,7 @@ fn process_markdown_file(
 			.unwrap_or_else(|e| {
 				panic!(
 					"Failed reading first line from \"{}\": {}.",
-					&input_file_name.display(),
+					&input_file_path.display(),
 					e
 				)
 			});
@@ -478,72 +495,123 @@ fn process_markdown_file(
 		&mut output_buf,
 		&front_matter,
 		parser,
-		input_file_name,
-		input_dir,
+		input_file_path,
+		root_input_dir,
 	);
 
-	let mut output_file_name = String::from(output_dir);
-	if input_file_name.starts_with(input_dir) {
-		output_file_name.push_str(
-			&input_file_name_str[input_dir.len()
-				..(input_file_name_str.len() - markdown_extension.len())],
+	let mut output_file_path = root_output_dir.clone();
+	if input_file_path.starts_with(root_input_dir) {
+		output_file_path.push(
+			input_file_path
+				.strip_prefix(root_input_dir)
+				.unwrap_or_else(|e| {
+					panic!(
+						"Failed stripping prefix \"{}\" from \"{}\": {}",
+						root_input_dir.display(),
+						input_file_path.display(),
+						e
+					)
+				})
+				.with_extension("html"),
 		);
 	} else {
-		let full_input_path = fs::canonicalize(input_dir).unwrap_or_else(|e| {
-			panic!("Failed to canonicalize {}: {}", input_dir, e)
-		});
-		if input_file_name.starts_with(&full_input_path) {
-			let full_input_path_str =
-				full_input_path.to_str().unwrap_or_else(|| {
-					panic!(
-						"Failed to convert {} into string.",
-						full_input_path.display()
-					);
-				});
-			output_file_name.push_str(
-				&input_file_name_str[full_input_path_str.len()
-					..(input_file_name_str.len() - markdown_extension.len())],
+		let full_root_input_path = fs::canonicalize(root_input_dir)
+			.unwrap_or_else(|e| {
+				panic!(
+					"Failed to canonicalize {}: {}",
+					root_input_dir.display(),
+					e
+				)
+			});
+		if input_file_path.starts_with(&full_root_input_path) {
+			output_file_path.push(
+				&input_file_path
+					.strip_prefix(&full_root_input_path)
+					.unwrap_or_else(|e| {
+						panic!(
+							"Failed stripping prefix \"{}\" from \"{}\": {}",
+							full_root_input_path.display(),
+							input_file_path.display(),
+							e
+						)
+					})
+					.with_extension("html"),
 			);
 		} else {
 			panic!(
 				"Unable to handle input file name: {}",
-				input_file_name.display()
+				input_file_path.display()
 			)
 		}
 	}
-	output_file_name.push_str("html");
+
+	let closest_output_dir = output_file_path.parent().unwrap_or_else(|| {
+		panic!(
+			"Output file path without a parent directory?: {}",
+			output_file_path.display()
+		)
+	});
+	fs::create_dir_all(closest_output_dir).unwrap_or_else(|e| {
+		panic!(
+			"Failed creating directories for {}: {}",
+			closest_output_dir.display(),
+			e
+		)
+	});
 
 	let mut output_file =
-		fs::File::create(&output_file_name).unwrap_or_else(|e| {
-			panic!("Failed creating \"{}\": {}.", &output_file_name, e)
+		fs::File::create(&output_file_path).unwrap_or_else(|e| {
+			panic!(
+				"Failed creating \"{}\": {}.",
+				&output_file_path.display(),
+				e
+			)
 		});
 	output_file
 		.write_all(&output_buf.buffer())
 		.unwrap_or_else(|e| {
-			panic!("Failed writing to \"{}\": {}.", &output_file_name, e)
+			panic!(
+				"Failed writing to \"{}\": {}.",
+				&output_file_path.display(),
+				e
+			)
 		});
 
 	// Avoiding sync_all() for now to be friendlier to disks.
 	output_file.sync_data().unwrap_or_else(|e| {
-		panic!("Failed sync_data() for \"{}\": {}.", &output_file_name, e)
+		panic!(
+			"Failed sync_data() for \"{}\": {}.",
+			&output_file_path.display(),
+			e
+		)
 	});
 
 	println!(
 		"Converted {} to {} after {} ms.",
-		input_file_name_str,
-		output_file_name,
+		input_file_path.display(),
+		output_file_path.display(),
 		timer.elapsed().as_millis()
 	);
 
-	PathBuf::from(&output_file_name[output_dir.len()..])
+	output_file_path
+		.strip_prefix(root_output_dir)
+		.unwrap_or_else(|e| {
+			panic!(
+				"Failed stripping prefix \"{}\" from \"{}\": {}",
+				root_output_dir.display(),
+				output_file_path.display(),
+				e
+			)
+		})
+		.to_path_buf()
 }
 
 fn write_html_page(
 	mut output_buf: &mut BufWriter<&mut Vec<u8>>,
 	front_matter: &FrontMatter,
 	mut parser: Parser,
-	input_file_name: &PathBuf,
-	input_dir: &str,
+	input_file_path: &PathBuf,
+	input_dir: &PathBuf,
 ) {
 	enum State {
 		JustHtml,
@@ -567,7 +635,7 @@ fn write_html_page(
 		field: &mut Vec<u8>,
 		front_matter: &FrontMatter,
 		parser: &mut Parser,
-		input_file_name: &PathBuf,
+		input_file_path: &PathBuf,
 	) {
 		if object.len() == 0 {
 			panic!("Empty object name.")
@@ -587,7 +655,7 @@ fn write_html_page(
 				.unwrap_or_else(|e| {
 					panic!(
 						"Failed converting Markdown file \"{}\" to HTML: {}.",
-						&input_file_name.display(),
+						&input_file_path.display(),
 						e
 					)
 				}),
@@ -604,9 +672,26 @@ fn write_html_page(
 	}
 
 	let mut template_file_path = PathBuf::from(input_dir);
-	template_file_path.push("templates");
-	// TODO: Calculate file name
-	template_file_path.push("post.html");
+	template_file_path.push("_templates");
+	let mut template_name = input_file_path
+		.parent()
+		.unwrap_or_else(|| {
+			panic!("Failed to get parent from: {}", input_file_path.display())
+		})
+		.file_name()
+		.unwrap_or_else(|| {
+			panic!(
+				"Failed to get file name of parent of: {}",
+				input_file_path.display()
+			)
+		})
+		.to_string_lossy()
+		.to_string();
+	if template_name.ends_with("s") {
+		template_name.truncate(template_name.len() - 1)
+	}
+	template_file_path.push(template_name);
+	template_file_path.set_extension("html");
 	let mut template_file =
 		fs::File::open(&template_file_path).unwrap_or_else(|e| {
 			panic!(
@@ -640,7 +725,7 @@ fn write_html_page(
 					State::LastOpenBracket => { write_to_output(output_buf, b"{\n"); state = State::JustHtml }
 					State::Template => {}
 					State::TemplateObject => panic!("Unexpected newline while reading template identifier at line {}, column {}.", line_number, column_number),
-					State::TemplateField => { output_template_value(&mut output_buf, &mut object, &mut field, &front_matter, &mut parser, input_file_name) }
+					State::TemplateField => { output_template_value(&mut output_buf, &mut object, &mut field, &front_matter, &mut parser, input_file_path) }
 					State::TemplateTrailingWhitespace => {}
 					State::FirstCloseBracket => panic!("Expected close bracket but got newline at line {}, column {}.", line_number, column_number)
 				}
@@ -683,7 +768,7 @@ fn write_html_page(
 							b'.' => panic!("Additional dot in template identifier at line {}, column {}.", line_number, column_number),
 							b'}' => state = State::FirstCloseBracket,
 							b' ' | b'\t' => {
-								output_template_value(&mut output_buf, &mut object, &mut field, &front_matter, &mut parser, input_file_name);
+								output_template_value(&mut output_buf, &mut object, &mut field, &front_matter, &mut parser, input_file_path);
 								state = State::TemplateTrailingWhitespace
 							}
 							_ => field.push(byte)
@@ -981,15 +1066,17 @@ fn handle_client(
 }
 
 fn parse_front_matter(
-	input_file_name: &str,
+	input_file_path: &PathBuf,
 	reader: &mut BufReader<fs::File>,
-	input_dir: &str,
 ) -> FrontMatter {
 	const MAX_FRONT_MATTER_LINES: u8 = 16;
 
 	let mut result = FrontMatter {
-		title: input_file_name[input_dir.len() + 1..input_file_name.len() - 3]
-			.to_owned(),
+		title: input_file_path
+			.file_stem()
+			.unwrap_or_else(|| panic!("Failed getting input file name."))
+			.to_string_lossy()
+			.to_string(),
 		date: "1970-01-01T00:00:00Z".to_string(),
 		published: true,
 		edited: None,
@@ -1003,14 +1090,19 @@ fn parse_front_matter(
 	let first_line_len = reader.read_line(&mut line).unwrap_or_else(|e| {
 		panic!(
 			"Failed reading first line from \"{}\": {}.",
-			&input_file_name, e
+			input_file_path.display(),
+			e
 		)
 	});
 
 	// YAML Front matter present missing?
 	if first_line_len != 4 || line != "---\n" {
 		reader.seek(SeekFrom::Start(0)).unwrap_or_else(|e| {
-			panic!("Failed seeking in \"{}\": {}.", &input_file_name, e)
+			panic!(
+				"Failed seeking in \"{}\": {}.",
+				input_file_path.display(),
+				e
+			)
 		});
 
 		return result;
@@ -1021,14 +1113,18 @@ fn parse_front_matter(
 	loop {
 		line.clear();
 		let _line_len = reader.read_line(&mut line).unwrap_or_else(|e| {
-			panic!("Failed reading line from \"{}\": {}.", &input_file_name, e)
+			panic!(
+				"Failed reading line from \"{}\": {}.",
+				input_file_path.display(),
+				e
+			)
 		});
 		if line == "---\n" {
 			break;
 		} else {
 			line_count += 1;
 			if line_count > MAX_FRONT_MATTER_LINES {
-				panic!("Entered front matter parsing mode but failed to find end after {} lines while parsing {}.", MAX_FRONT_MATTER_LINES, &input_file_name);
+				panic!("Entered front matter parsing mode but failed to find end after {} lines while parsing {}.", MAX_FRONT_MATTER_LINES, input_file_path.display());
 			}
 			front_matter_str.push_str(&line);
 		}
@@ -1038,13 +1134,14 @@ fn parse_front_matter(
 		YamlLoader::load_from_str(&front_matter_str).unwrap_or_else(|e| {
 			panic!(
 				"Failed loading YAML front matter from \"{}\": {}.",
-				&input_file_name, e
+				input_file_path.display(),
+				e
 			)
 		});
 
 	if yaml.len() != 1 {
 		panic!("Expected only one YAML root element (Hash) in front matter of \"{}\" but got {}.", 
-			&input_file_name, yaml.len());
+			input_file_path.display(), yaml.len());
 	}
 
 	if let yaml_rust::Yaml::Hash(hash) = &yaml[0] {
@@ -1054,16 +1151,16 @@ fn parse_front_matter(
 					&mut result,
 					&s,
 					&mapping.1,
-					&input_file_name,
+					input_file_path,
 				)
 			} else {
 				panic!("Expected string keys in YAML element in front matter of \"{}\" but got {:?}.", 
-						&input_file_name, &mapping.0)
+						input_file_path.display(), &mapping.0)
 			}
 		}
 	} else {
 		panic!("Expected Hash as YAML root element in front matter of \"{}\" but got {:?}.", 
-			&input_file_name, &yaml[0])
+			input_file_path.display(), &yaml[0])
 	}
 
 	result
@@ -1073,7 +1170,7 @@ fn parse_yaml_attribute(
 	front_matter: &mut FrontMatter,
 	name: &str,
 	value: &yaml_rust::Yaml,
-	input_file_name: &str,
+	input_file_path: &PathBuf,
 ) {
 	if name == "title" {
 		if let yaml_rust::Yaml::String(value) = value {
@@ -1081,7 +1178,8 @@ fn parse_yaml_attribute(
 		} else {
 			panic!(
 				"title of \"{}\" has unexpected type {:?}",
-				&input_file_name, value
+				input_file_path.display(),
+				value
 			)
 		}
 	} else if name == "date" {
@@ -1090,7 +1188,8 @@ fn parse_yaml_attribute(
 		} else {
 			panic!(
 				"date of \"{}\" has unexpected type {:?}",
-				&input_file_name, value
+				input_file_path.display(),
+				value
 			)
 		}
 	} else if name == "published" {
@@ -1099,7 +1198,8 @@ fn parse_yaml_attribute(
 		} else {
 			panic!(
 				"published of \"{}\" has unexpected type {:?}",
-				&input_file_name, value
+				input_file_path.display(),
+				value
 			)
 		}
 	} else if name == "edited" {
@@ -1108,7 +1208,8 @@ fn parse_yaml_attribute(
 		} else {
 			panic!(
 				"edited of \"{}\" has unexpected type {:?}",
-				&input_file_name, value
+				input_file_path.display(),
+				value
 			)
 		}
 	} else if name == "categories" {
@@ -1118,13 +1219,14 @@ fn parse_yaml_attribute(
 					front_matter.categories.push(value.clone())
 				} else {
 					panic!("Element of categories of \"{}\" has unexpected type {:?}",
-						&input_file_name, element)
+						input_file_path.display(), element)
 				}
 			}
 		} else {
 			panic!(
 				"categories of \"{}\" has unexpected type {:?}",
-				&input_file_name, value
+				input_file_path.display(),
+				value
 			)
 		}
 	} else if name == "tags" {
@@ -1135,14 +1237,16 @@ fn parse_yaml_attribute(
 				} else {
 					panic!(
 						"Element of tags of \"{}\" has unexpected type {:?}",
-						&input_file_name, element
+						input_file_path.display(),
+						element
 					)
 				}
 			}
 		} else {
 			panic!(
 				"tags of \"{}\" has unexpected type {:?}",
-				&input_file_name, value
+				input_file_path.display(),
+				value
 			)
 		}
 	} else if name == "layout" {
@@ -1151,7 +1255,8 @@ fn parse_yaml_attribute(
 		} else {
 			panic!(
 				"layout of \"{}\" has unexpected type {:?}",
-				&input_file_name, value
+				input_file_path.display(),
+				value
 			)
 		}
 	} else if let yaml_rust::Yaml::String(value) = value {
@@ -1161,7 +1266,9 @@ fn parse_yaml_attribute(
 	} else {
 		panic!(
 			"custom attribute \"{}\" of \"{}\" has unexpected type {:?}",
-			name, &input_file_name, value
+			name,
+			input_file_path.display(),
+			value
 		)
 	}
 }
