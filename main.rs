@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io::{
@@ -40,12 +41,14 @@ struct I16Arg {
 	name: &'static str,
 	help: &'static str,
 	value: i16,
+	set: bool,
 }
 
 struct StringArg {
 	name: &'static str,
 	help: &'static str,
 	value: String,
+	set: bool,
 }
 
 impl fmt::Display for BoolArg {
@@ -87,21 +90,25 @@ fn main() -> io::Result<()> {
 		name: "host",
 		help: "Set address to bind to. The default 127.0.0.1 can be used for privacy and 0.0.0.0 to give access to other machines.",
 		value: String::from("127.0.0.1"),
+		set: false,
 	};
 	let mut input_arg = StringArg {
 		name: "input",
 		help: "Set input directory to process.",
 		value: String::from("./input"),
+		set: false,
 	};
 	let mut output_arg = StringArg {
 		name: "output",
 		help: "Set output directory to write to.",
 		value: String::from("./output"),
+		set: false,
 	};
 	let mut port_arg = I16Arg {
 		name: "port",
 		help: "Set port to bind to.",
 		value: 8090,
+		set: false,
 	};
 	let mut watch_arg = BoolArg {
 		name: "watch",
@@ -153,11 +160,15 @@ Arguments:"
 				&file_name,
 				&input_arg.value,
 				&output_arg.value,
+				markdown_extension,
 			))
 		}
 	}
 
 	if !watch_arg.value {
+		if host_arg.set || port_arg.set {
+			println!("WARNING: {} or {} arg set without {} arg, so they have no use.", host_arg.name, port_arg.name, watch_arg.name)
+		}
 		return Ok(());
 	}
 
@@ -279,6 +290,7 @@ fn watch_fs(
 								&path,
 								&input_dir,
 								&output_dir,
+								markdown_extension,
 							))
 						} else {
 							None
@@ -322,6 +334,7 @@ fn parse_args(
 			for string_arg in &mut *string_args {
 				if prev == string_arg.name {
 					string_arg.value = arg;
+					string_arg.set = true;
 					previous_arg = None;
 					continue 'arg_loop;
 				}
@@ -332,6 +345,7 @@ fn parse_args(
 					i16_arg.value = arg.parse::<i16>().unwrap_or_else(|e| {
 						panic!("Invalid value for {}: {}", i16_arg.name, e);
 					});
+					i16_arg.set = true;
 					previous_arg = None;
 					continue 'arg_loop;
 				}
@@ -379,11 +393,11 @@ fn is_file_with_extension(path: &PathBuf, extension: &OsStr) -> bool {
 }
 
 fn get_markdown_files(
-	input_path: &str,
+	input_dir: &str,
 	markdown_extension: &OsStr,
 ) -> Vec<PathBuf> {
-	let entries = fs::read_dir(input_path).unwrap_or_else(|e| {
-		panic!("Failed reading paths from \"{}\": {}.", input_path, e)
+	let entries = fs::read_dir(input_dir).unwrap_or_else(|e| {
+		panic!("Failed reading paths from \"{}\": {}.", input_dir, e)
 	});
 	let mut files = Vec::new();
 	for entry in entries {
@@ -415,7 +429,7 @@ fn get_markdown_files(
 				}
 			}
 			Err(e) => {
-				println!("WARNING: Invalid entry in \"{}\": {}", input_path, e)
+				println!("WARNING: Invalid entry in \"{}\": {}", input_dir, e)
 			}
 		}
 	}
@@ -425,8 +439,9 @@ fn get_markdown_files(
 
 fn process_markdown_file(
 	input_file_name: &PathBuf,
-	input_path: &str,
-	output_path: &str,
+	input_dir: &str,
+	output_dir: &str,
+	markdown_extension: &OsStr,
 ) -> PathBuf {
 	let timer = Instant::now();
 	let input_file = fs::File::open(&input_file_name).unwrap_or_else(|e| {
@@ -443,7 +458,7 @@ fn process_markdown_file(
 	let mut reader = BufReader::new(input_file);
 
 	let front_matter =
-		parse_front_matter(&input_file_name_str, &mut reader, input_path);
+		parse_front_matter(&input_file_name_str, &mut reader, input_dir);
 	let mut input_file_str = String::new();
 	let _size =
 		reader
@@ -459,19 +474,24 @@ fn process_markdown_file(
 	let mut output = Vec::new();
 	let mut output_buf = BufWriter::new(&mut output);
 
-	write_html_page(&mut output_buf, &front_matter, parser, input_file_name);
+	write_html_page(
+		&mut output_buf,
+		&front_matter,
+		parser,
+		input_file_name,
+		input_dir,
+	);
 
-	let mut output_file_name = String::from(output_path);
-	if input_file_name.starts_with(input_path) {
+	let mut output_file_name = String::from(output_dir);
+	if input_file_name.starts_with(input_dir) {
 		output_file_name.push_str(
-			&input_file_name_str
-				[input_path.len()..(input_file_name_str.len() - "md".len())],
+			&input_file_name_str[input_dir.len()
+				..(input_file_name_str.len() - markdown_extension.len())],
 		);
 	} else {
-		let full_input_path =
-			fs::canonicalize(input_path).unwrap_or_else(|e| {
-				panic!("Failed to canonicalize {}: {}", input_path, e)
-			});
+		let full_input_path = fs::canonicalize(input_dir).unwrap_or_else(|e| {
+			panic!("Failed to canonicalize {}: {}", input_dir, e)
+		});
 		if input_file_name.starts_with(&full_input_path) {
 			let full_input_path_str =
 				full_input_path.to_str().unwrap_or_else(|| {
@@ -482,7 +502,7 @@ fn process_markdown_file(
 				});
 			output_file_name.push_str(
 				&input_file_name_str[full_input_path_str.len()
-					..(input_file_name_str.len() - "md".len())],
+					..(input_file_name_str.len() - markdown_extension.len())],
 			);
 		} else {
 			panic!(
@@ -509,73 +529,184 @@ fn process_markdown_file(
 	});
 
 	println!(
-		"Done with {} after {} ms.",
+		"Converted {} to {} after {} ms.",
 		input_file_name_str,
+		output_file_name,
 		timer.elapsed().as_millis()
 	);
 
-	PathBuf::from(&output_file_name[output_path.len()..])
+	PathBuf::from(&output_file_name[output_dir.len()..])
 }
 
 fn write_html_page(
 	mut output_buf: &mut BufWriter<&mut Vec<u8>>,
 	front_matter: &FrontMatter,
-	parser: Parser,
+	mut parser: Parser,
 	input_file_name: &PathBuf,
+	input_dir: &str,
 ) {
+	enum State {
+		JustHtml,
+		LastOpenBracket,
+		Template,
+		TemplateObject,
+		TemplateField,
+		TemplateTrailingWhitespace,
+		FirstCloseBracket,
+	}
+
 	fn write_to_output(output_buf: &mut BufWriter<&mut Vec<u8>>, data: &[u8]) {
 		output_buf.write_all(data).unwrap_or_else(|e| {
 			panic!("Failed writing \"{:?}\" to to buffer: {}.", data, e)
 		});
 	}
 
-	write_to_output(
-		&mut output_buf,
-		b"<html>
-<head>
-<title>",
-	);
-	write_to_output(&mut output_buf, front_matter.title.as_bytes());
-	write_to_output(
-		&mut output_buf,
-		b"</title>
-<style type=\"text/css\">
-.container {
-	max-width: 38rem;
-	margin-left: auto;
-	margin-right: auto;
-	font-family: \"Helvetica Neue\", Helvetica, Arial, sans-serif;
-}
-TIME {
-	color: rgb(154, 154, 154);
-}
-HR {
-	border: 0;
-	border-top: 1px solid #eee;
-}
-</style>
-</head>
-<body>
-<div class=\"container\">
-<time datetime=\"",
-	);
-	write_to_output(&mut output_buf, front_matter.date.as_bytes());
-	write_to_output(&mut output_buf, b"\">");
-	write_to_output(&mut output_buf, front_matter.date.as_bytes());
-	write_to_output(&mut output_buf, b"</time>");
-	html::write_html(&mut output_buf, parser).unwrap_or_else(|e| {
-		panic!(
-			"Failed converting Markdown file \"{}\" to HTML: {}.",
-			&input_file_name.display(),
-			e
-		)
-	});
-	write_to_output(
-		&mut output_buf,
-		b"</div>
-</body>
-</html>",
-	);
+	fn output_template_value(
+		mut output_buf: &mut BufWriter<&mut Vec<u8>>,
+		object: &mut Vec<u8>,
+		field: &mut Vec<u8>,
+		front_matter: &FrontMatter,
+		parser: &mut Parser,
+		input_file_name: &PathBuf,
+	) {
+		if object.len() == 0 {
+			panic!("Empty object name.")
+		}
+		if field.len() == 0 {
+			panic!("Empty field name.")
+		}
+
+		let object_str = String::from_utf8_lossy(object);
+		if object_str != "page" {
+			panic!("Unhandled object \"{}\"", object_str);
+		}
+
+		let field_str = String::from_utf8_lossy(field);
+		match field_str.borrow() {
+			"content" => html::write_html(&mut output_buf, parser)
+				.unwrap_or_else(|e| {
+					panic!(
+						"Failed converting Markdown file \"{}\" to HTML: {}.",
+						&input_file_name.display(),
+						e
+					)
+				}),
+			"date" => {
+				write_to_output(&mut output_buf, front_matter.date.as_bytes())
+			}
+			"title" => {
+				write_to_output(&mut output_buf, front_matter.title.as_bytes())
+			}
+			_ => {}
+		}
+		object.clear();
+		field.clear();
+	}
+
+	let mut template_file_path = PathBuf::from(input_dir);
+	template_file_path.push("templates");
+	// TODO: Calculate file name
+	template_file_path.push("post.html");
+	let mut template_file =
+		fs::File::open(&template_file_path).unwrap_or_else(|e| {
+			panic!(
+				"Failed opening template file {}: {}",
+				template_file_path.display(),
+				e
+			)
+		});
+	let mut state = State::JustHtml;
+	let mut buf = [0_u8; 64 * 1024];
+	let mut line_number = 1;
+	let mut column_number = 1;
+	let mut object = Vec::new();
+	let mut field = Vec::new();
+	loop {
+		let size = template_file.read(&mut buf).unwrap_or_else(|e| {
+			panic!(
+				"Failed reading from template file {}: {}",
+				template_file_path.display(),
+				e
+			)
+		});
+		if size == 0 {
+			break;
+		}
+
+		for &byte in &buf[0..size] {
+			if byte == b'\n' {
+				match state {
+					State::JustHtml => { write_to_output(output_buf, &[byte]); }
+					State::LastOpenBracket => { write_to_output(output_buf, b"{\n"); state = State::JustHtml }
+					State::Template => {}
+					State::TemplateObject => panic!("Unexpected newline while reading template identifier at line {}, column {}.", line_number, column_number),
+					State::TemplateField => { output_template_value(&mut output_buf, &mut object, &mut field, &front_matter, &mut parser, input_file_name) }
+					State::TemplateTrailingWhitespace => {}
+					State::FirstCloseBracket => panic!("Expected close bracket but got newline at line {}, column {}.", line_number, column_number)
+				}
+				line_number += 1;
+				column_number = 1;
+			} else {
+				match state {
+					State::JustHtml => {
+						match byte {
+							b'{' => state = State::LastOpenBracket,
+							_ => write_to_output(output_buf, &[byte])
+						}
+					},
+					State::LastOpenBracket => {
+						match byte {
+							b'{' => state = State::Template,
+							_ => {
+								write_to_output(output_buf, &[b'{']);
+								state = State::JustHtml;
+							}
+						}
+					},
+					State::Template => match byte {
+						b'{' => panic!("Unexpected open bracket while in template mode at line {}, column {}.", line_number, column_number),
+						b' ' | b'\t' => {},
+						_ => {
+							object.push(byte);
+							state = State::TemplateObject;
+						}
+					},
+					State::TemplateObject => {
+						if byte == b'.' {
+							state = State::TemplateField;
+						} else {
+							object.push(byte);
+						}
+					},
+					State::TemplateField => {
+						match byte {
+							b'.' => panic!("Additional dot in template identifier at line {}, column {}.", line_number, column_number),
+							b'}' => state = State::FirstCloseBracket,
+							b' ' | b'\t' => {
+								output_template_value(&mut output_buf, &mut object, &mut field, &front_matter, &mut parser, input_file_name);
+								state = State::TemplateTrailingWhitespace
+							}
+							_ => field.push(byte)
+						}
+					},
+					State::TemplateTrailingWhitespace => {
+						match byte {
+						b'}' => state = State::FirstCloseBracket,
+						b' ' | b'\t' => {}
+						_ => panic!("Unexpected non-whitespace character at line {}, column {}.", line_number, column_number)
+						}
+					}
+					State::FirstCloseBracket => {
+						if byte == b'}' {
+							state = State::JustHtml;
+						} else {
+							panic!("Missing double close-bracket at line {}, column {}.", line_number, column_number)
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 fn handle_read(stream: &mut TcpStream) -> Option<ReadResult> {
@@ -852,12 +983,12 @@ fn handle_client(
 fn parse_front_matter(
 	input_file_name: &str,
 	reader: &mut BufReader<fs::File>,
-	input_path: &str,
+	input_dir: &str,
 ) -> FrontMatter {
 	const MAX_FRONT_MATTER_LINES: u8 = 16;
 
 	let mut result = FrontMatter {
-		title: input_file_name[input_path.len() + 1..input_file_name.len() - 3]
+		title: input_file_name[input_dir.len() + 1..input_file_name.len() - 3]
 			.to_owned(),
 		date: "1970-01-01T00:00:00Z".to_string(),
 		published: true,
