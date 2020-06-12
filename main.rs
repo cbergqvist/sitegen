@@ -304,13 +304,14 @@ fn watch_fs(
 										path.display()
 									)
 								});
-							if parent_path.file_name().unwrap_or_else(|| {
-								panic!(
-									"Missing file name in path: {}",
-									parent_path.display()
-								)
-							}) == "_templates"
-							{
+							let parent_path_file_name =
+								parent_path.file_name().unwrap_or_else(|| {
+									panic!(
+										"Missing file name in path: {}",
+										parent_path.display()
+									)
+								});
+							if parent_path_file_name == "_templates" {
 								let file_stem =
 									path.file_stem().unwrap_or_else(|| {
 										panic!(
@@ -330,7 +331,19 @@ fn watch_fs(
 									Vec::new()
 								};
 
-								if !markdown_files.is_empty() {
+								if markdown_files.is_empty() {
+									let templated_file = input_dir
+										.join(file_stem)
+										.with_extension(markdown_extension);
+									if templated_file.exists() {
+										path_to_communicate =
+											Some(process_markdown_file(
+												&templated_file,
+												&input_dir,
+												&output_dir,
+											));
+									}
+								} else {
 									let mut output_files = Vec::new();
 									for file_name in &markdown_files {
 										output_files.push(
@@ -343,18 +356,6 @@ fn watch_fs(
 									}
 									path_to_communicate =
 										output_files.first().cloned();
-								} else {
-									let templated_file = input_dir
-										.join(file_stem)
-										.with_extension(markdown_extension);
-									if templated_file.exists() {
-										path_to_communicate =
-											Some(process_markdown_file(
-												&templated_file,
-												&input_dir,
-												&output_dir,
-											));
-									}
 								}
 							}
 						}
@@ -481,17 +482,13 @@ fn get_markdown_files(
 							);
 						}
 					} else if ft.is_dir() {
-						if path
-							.file_name()
-							.unwrap_or_else(|| {
-								panic!(
-									"Directory without filename?: {}",
-									path.display()
-								)
-							})
-							.to_string_lossy()
-							.starts_with("_")
-						{
+						let file_name = path.file_name().unwrap_or_else(|| {
+							panic!(
+								"Directory without filename?: {}",
+								path.display()
+							)
+						});
+						if file_name.to_string_lossy().starts_with('_') {
 							println!(
 								"Skipping '_'-prefixed dir: {}",
 								path.display()
@@ -696,10 +693,10 @@ fn write_html_page(
 		parser: &mut Parser,
 		input_file_path: &PathBuf,
 	) {
-		if object.len() == 0 {
+		if object.is_empty() {
 			panic!("Empty object name.")
 		}
-		if field.len() == 0 {
+		if field.is_empty() {
 			panic!("Empty field name.")
 		}
 
@@ -772,7 +769,7 @@ fn write_html_page(
 			.to_string_lossy()
 			.to_string()
 	};
-	if template_name.ends_with("s") {
+	if template_name.ends_with('s') {
 		template_name.truncate(template_name.len() - 1)
 	}
 	template_file_path.push(template_name);
@@ -808,11 +805,10 @@ fn write_html_page(
 				match state {
 					State::JustHtml => { write_to_output(output_buf, &[byte]); }
 					State::LastOpenBracket => { write_to_output(output_buf, b"{\n"); state = State::JustHtml }
-					State::Template => {}
 					State::TemplateObject => panic!("Unexpected newline while reading template identifier at line {}, column {}.", line_number, column_number),
 					State::TemplateField => { output_template_value(&mut output_buf, &mut object, &mut field, &front_matter, &mut parser, input_file_path) }
-					State::TemplateTrailingWhitespace => {}
-					State::FirstCloseBracket => panic!("Expected close bracket but got newline at line {}, column {}.", line_number, column_number)
+					State::FirstCloseBracket => panic!("Expected close bracket but got newline at line {}, column {}.", line_number, column_number),
+					State::Template | State::TemplateTrailingWhitespace => {}
 				}
 				line_number += 1;
 				column_number = 1;
@@ -825,12 +821,11 @@ fn write_html_page(
 						}
 					},
 					State::LastOpenBracket => {
-						match byte {
-							b'{' => state = State::Template,
-							_ => {
-								write_to_output(output_buf, &[b'{']);
-								state = State::JustHtml;
-							}
+						if byte == b'{' {
+							state = State::Template
+						} else {
+							write_to_output(output_buf, &[b'{']);
+							state = State::JustHtml;
 						}
 					},
 					State::Template => match byte {
