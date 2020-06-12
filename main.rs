@@ -695,6 +695,8 @@ fn compute_output_file_path(
 	path
 }
 
+// Rolling a simple version of Liquid parsing on my own since the official Rust
+// one has too many dependencies.
 fn write_html_page(
 	mut output_buf: &mut BufWriter<&mut Vec<u8>>,
 	front_matter: &FrontMatter,
