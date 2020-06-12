@@ -376,6 +376,15 @@ fn get_path_to_refresh(
 				}
 				return output_files.first().cloned();
 			}
+		} else if parent_path_file_name == "_includes" {
+			// Since we don't track what includes what, just do a full refresh.
+			let markdown_files =
+				get_markdown_files(&input_dir, markdown_extension);
+			for file_name in &markdown_files {
+				process_markdown_file(&file_name, &input_dir, &output_dir);
+			}
+			// Special identifier making JavaScript reload the current page.
+			return Some(PathBuf::from("*"));
 		}
 	}
 
@@ -1159,7 +1168,7 @@ socket.onopen = function(e) {{
 //alert(\"[open] Connection established\")
 }}
 socket.onmessage = function(e) {{
-e.data.text().then(text => window.frames['preview'].location.href = text)
+e.data.text().then(text => {{ if (text == \"*\") {{ window.frames['preview'].location.reload() }} else {{ window.frames['preview'].location.href = text }} }})
 }}
 socket.onerror = function(e) {{
 alert(`Socket error: ${{e}}`)
