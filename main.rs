@@ -341,7 +341,7 @@ fn get_path_to_refresh(
 			parent_path.file_name().unwrap_or_else(|| {
 				panic!("Missing file name in path: {}", parent_path.display())
 			});
-		if parent_path_file_name == "_templates" {
+		if parent_path_file_name == "_layouts" {
 			let file_stem = path.file_stem().unwrap_or_else(|| {
 				panic!("Missing file stem in path: {}", path.display())
 			});
@@ -865,7 +865,7 @@ fn compute_template_file_path(
 	root_input_dir: &PathBuf,
 ) -> PathBuf {
 	let mut template_file_path = PathBuf::from(root_input_dir);
-	template_file_path.push("_templates");
+	template_file_path.push("_layouts");
 	let input_file_parent = input_file_path.parent().unwrap_or_else(|| {
 		panic!("Failed to get parent from: {}", input_file_path.display())
 	});
