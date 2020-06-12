@@ -196,6 +196,8 @@ Arguments:"
 		start_file,
 	);
 
+	// As we start watching some time after we've done initial processing, it is
+	// possible that files get modified in between and changes get lost.
 	watch_fs(&input_dir, &output_dir, markdown_extension, &fs_cond_clone);
 
 	// We never really get here as we loop infinitely until Ctrl+C.
@@ -611,7 +613,7 @@ fn write_html_page(
 	front_matter: &FrontMatter,
 	mut parser: Parser,
 	input_file_path: &PathBuf,
-	input_dir: &PathBuf,
+	root_input_dir: &PathBuf,
 ) {
 	enum State {
 		JustHtml,
@@ -671,22 +673,43 @@ fn write_html_page(
 		field.clear();
 	}
 
-	let mut template_file_path = PathBuf::from(input_dir);
+	let mut template_file_path = PathBuf::from(root_input_dir);
 	template_file_path.push("_templates");
-	let mut template_name = input_file_path
-		.parent()
-		.unwrap_or_else(|| {
-			panic!("Failed to get parent from: {}", input_file_path.display())
-		})
-		.file_name()
-		.unwrap_or_else(|| {
-			panic!(
-				"Failed to get file name of parent of: {}",
-				input_file_path.display()
-			)
-		})
-		.to_string_lossy()
-		.to_string();
+	let input_file_parent = input_file_path.parent().unwrap_or_else(|| {
+		panic!("Failed to get parent from: {}", input_file_path.display())
+	});
+	let mut root_input_dir_corrected = root_input_dir.clone();
+	if !input_file_parent.starts_with(root_input_dir) {
+		let full_root_input_path = fs::canonicalize(root_input_dir)
+			.unwrap_or_else(|e| {
+				panic!(
+					"Failed to canonicalize {}: {}",
+					root_input_dir.display(),
+					e
+				)
+			});
+		if input_file_path.starts_with(&full_root_input_path) {
+			root_input_dir_corrected = full_root_input_path
+		}
+	}
+	let mut template_name = if input_file_parent == root_input_dir_corrected {
+		input_file_path
+			.file_name()
+			.unwrap()
+			.to_string_lossy()
+			.to_string()
+	} else {
+		input_file_parent
+			.file_name()
+			.unwrap_or_else(|| {
+				panic!(
+					"Failed to get file name of parent of: {}",
+					input_file_path.display()
+				)
+			})
+			.to_string_lossy()
+			.to_string()
+	};
 	if template_name.ends_with("s") {
 		template_name.truncate(template_name.len() - 1)
 	}
