@@ -12,7 +12,7 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use std::{env, fmt, fs, io};
+use std::{env, fmt, fs};
 
 use pulldown_cmark::{html, Parser};
 
@@ -79,7 +79,7 @@ enum ReadResult {
 	WebSocket(String),
 }
 
-fn main() -> io::Result<()> {
+fn main() {
 	// Not using the otherwise brilliant CLAP crate since I detest string matching args to get their values.
 	let mut help_arg = BoolArg {
 		name: "help",
@@ -138,12 +138,32 @@ Arguments:"
 		println!("{}", port_arg);
 		println!("{}", watch_arg);
 
-		return Ok(());
+		return;
 	}
 
-	let input_dir = PathBuf::from(&input_arg.value);
-	let output_dir = PathBuf::from(&output_arg.value);
+	if !watch_arg.value && (host_arg.set || port_arg.set) {
+		println!(
+			"WARNING: {} or {} arg set without {} arg, so they have no use.",
+			host_arg.name, port_arg.name, watch_arg.name
+		)
+	}
 
+	inner_main(
+		&PathBuf::from(input_arg.value),
+		&PathBuf::from(output_arg.value),
+		&host_arg.value,
+		port_arg.value,
+		watch_arg.value,
+	)
+}
+
+fn inner_main(
+	input_dir: &PathBuf,
+	output_dir: &PathBuf,
+	host: &str,
+	port: i16,
+	watch: bool,
+) {
 	let markdown_extension = OsStr::new("md");
 
 	let mut output_files = Vec::new();
@@ -156,8 +176,8 @@ Arguments:"
 			input_dir.display()
 		);
 	} else {
-		fs::create_dir(&output_arg.value).unwrap_or_else(|e| {
-			panic!("Failed creating \"{}\": {}.", output_arg.value, e)
+		fs::create_dir(&output_dir).unwrap_or_else(|e| {
+			panic!("Failed creating \"{}\": {}.", output_dir.display(), e)
 		});
 
 		for file_name in &markdown_files {
@@ -169,11 +189,8 @@ Arguments:"
 		}
 	}
 
-	if !watch_arg.value {
-		if host_arg.set || port_arg.set {
-			println!("WARNING: {} or {} arg set without {} arg, so they have no use.", host_arg.name, port_arg.name, watch_arg.name)
-		}
-		return Ok(());
+	if !watch {
+		return;
 	}
 
 	let fs_cond = Arc::new((
@@ -184,17 +201,12 @@ Arguments:"
 		Condvar::new(),
 	));
 
-	let root_dir = PathBuf::from(&output_arg.value);
+	let root_dir = PathBuf::from(&output_dir);
 	let fs_cond_clone = fs_cond.clone();
 	let start_file = output_files.first().cloned();
 
-	let listening_thread = spawn_listening_thread(
-		&host_arg.value,
-		port_arg.value,
-		root_dir,
-		fs_cond,
-		start_file,
-	);
+	let listening_thread =
+		spawn_listening_thread(host, port, root_dir, fs_cond, start_file);
 
 	// As we start watching some time after we've done initial processing, it is
 	// possible that files get modified in between and changes get lost.
@@ -204,8 +216,6 @@ Arguments:"
 	listening_thread
 		.join()
 		.expect("Failed joining listening thread.");
-
-	Ok(())
 }
 
 fn spawn_listening_thread(
@@ -267,107 +277,26 @@ fn watch_fs(
 			Ok(event) => {
 				println!("Got {:?}", event);
 				match event {
-					notify::DebouncedEvent::Write(mut path)
-					| notify::DebouncedEvent::Create(mut path) => {
-						path = path.canonicalize().unwrap_or_else(|e| {
-							panic!(
-								"Canonicalization of {} failed: {}",
-								path.display(),
-								e
-							)
-						});
-						let mut path_to_communicate = None;
-						if path.extension() == Some(markdown_extension) {
-							match fs::create_dir(&output_dir) {
-								Ok(_) => {}
-								Err(e) => {
-									if e.kind() != ErrorKind::AlreadyExists {
-										panic!(
-											"Failed creating \"{}\": {}.",
-											output_dir.display(),
-											e
-										)
-									}
-								}
-							}
+					notify::DebouncedEvent::Write(path)
+					| notify::DebouncedEvent::Create(path) => {
+						let path_to_communicate = get_path_to_refresh(
+							path,
+							markdown_extension,
+							html_extension,
+							input_dir,
+							output_dir,
+						);
+						if path_to_communicate.is_some() {
+							let (mutex, cvar) = &**fs_cond;
 
-							path_to_communicate = Some(process_markdown_file(
-								&path,
-								&input_dir,
-								&output_dir,
-							));
-						} else if path.extension() == Some(html_extension) {
-							let parent_path =
-								path.parent().unwrap_or_else(|| {
-									panic!(
-										"Path without a parent directory?: {}",
-										path.display()
-									)
+							let mut refresh =
+								mutex.lock().unwrap_or_else(|e| {
+									panic!("Failed locking mutex: {}", e)
 								});
-							let parent_path_file_name =
-								parent_path.file_name().unwrap_or_else(|| {
-									panic!(
-										"Missing file name in path: {}",
-										parent_path.display()
-									)
-								});
-							if parent_path_file_name == "_templates" {
-								let file_stem =
-									path.file_stem().unwrap_or_else(|| {
-										panic!(
-											"Missing file stem in path: {}",
-											path.display()
-										)
-									});
-								let mut dir_name = OsString::from(file_stem);
-								dir_name.push("s");
-								let markdown_dir = input_dir.join(dir_name);
-								let markdown_files = if markdown_dir.exists() {
-									get_markdown_files(
-										&markdown_dir,
-										markdown_extension,
-									)
-								} else {
-									Vec::new()
-								};
-
-								if markdown_files.is_empty() {
-									let templated_file = input_dir
-										.join(file_stem)
-										.with_extension(markdown_extension);
-									if templated_file.exists() {
-										path_to_communicate =
-											Some(process_markdown_file(
-												&templated_file,
-												&input_dir,
-												&output_dir,
-											));
-									}
-								} else {
-									let mut output_files = Vec::new();
-									for file_name in &markdown_files {
-										output_files.push(
-											process_markdown_file(
-												&file_name,
-												&input_dir,
-												&output_dir,
-											),
-										)
-									}
-									path_to_communicate =
-										output_files.first().cloned();
-								}
-							}
+							refresh.file = path_to_communicate;
+							refresh.index += 1;
+							cvar.notify_all();
 						}
-
-						let (mutex, cvar) = &**fs_cond;
-
-						let mut refresh = mutex.lock().unwrap_or_else(|e| {
-							panic!("Failed locking mutex: {}", e)
-						});
-						refresh.file = path_to_communicate;
-						refresh.index += 1;
-						cvar.notify_all();
 					}
 					_ => {
 						println!("Skipping event.");
@@ -379,6 +308,79 @@ fn watch_fs(
 	}
 }
 
+fn get_path_to_refresh(
+	mut path: PathBuf,
+	markdown_extension: &OsStr,
+	html_extension: &OsStr,
+	input_dir: &PathBuf,
+	output_dir: &PathBuf,
+) -> Option<PathBuf> {
+	path = path.canonicalize().unwrap_or_else(|e| {
+		panic!("Canonicalization of {} failed: {}", path.display(), e)
+	});
+	if path.extension() == Some(markdown_extension) {
+		match fs::create_dir(&output_dir) {
+			Ok(_) => {}
+			Err(e) => {
+				if e.kind() != ErrorKind::AlreadyExists {
+					panic!(
+						"Failed creating \"{}\": {}.",
+						output_dir.display(),
+						e
+					)
+				}
+			}
+		}
+
+		return Some(process_markdown_file(&path, &input_dir, &output_dir));
+	} else if path.extension() == Some(html_extension) {
+		let parent_path = path.parent().unwrap_or_else(|| {
+			panic!("Path without a parent directory?: {}", path.display())
+		});
+		let parent_path_file_name =
+			parent_path.file_name().unwrap_or_else(|| {
+				panic!("Missing file name in path: {}", parent_path.display())
+			});
+		if parent_path_file_name == "_templates" {
+			let file_stem = path.file_stem().unwrap_or_else(|| {
+				panic!("Missing file stem in path: {}", path.display())
+			});
+			let mut dir_name = OsString::from(file_stem);
+			dir_name.push("s");
+			let markdown_dir = input_dir.join(dir_name);
+			let markdown_files = if markdown_dir.exists() {
+				get_markdown_files(&markdown_dir, markdown_extension)
+			} else {
+				Vec::new()
+			};
+
+			if markdown_files.is_empty() {
+				let templated_file = input_dir
+					.join(file_stem)
+					.with_extension(markdown_extension);
+				if templated_file.exists() {
+					return Some(process_markdown_file(
+						&templated_file,
+						&input_dir,
+						&output_dir,
+					));
+				}
+			} else {
+				let mut output_files = Vec::new();
+				for file_name in &markdown_files {
+					output_files.push(process_markdown_file(
+						&file_name,
+						&input_dir,
+						&output_dir,
+					))
+				}
+				return output_files.first().cloned();
+			}
+		}
+	}
+
+	None
+}
 fn parse_args(
 	bool_args: &mut Vec<&mut BoolArg>,
 	i16_args: &mut Vec<&mut I16Arg>,
@@ -532,18 +534,18 @@ fn process_markdown_file(
 	let mut reader = BufReader::new(input_file);
 
 	let front_matter = parse_front_matter(&input_file_path, &mut reader);
-	let mut input_file_str = String::new();
+	let mut markdown_content = String::new();
 	let _size =
 		reader
-			.read_to_string(&mut input_file_str)
+			.read_to_string(&mut markdown_content)
 			.unwrap_or_else(|e| {
 				panic!(
-					"Failed reading first line from \"{}\": {}.",
+					"Failed reading Markdown content from \"{}\": {}.",
 					&input_file_path.display(),
 					e
 				)
 			});
-	let parser = Parser::new(&input_file_str);
+	let parser = Parser::new(&markdown_content);
 	let mut output = Vec::new();
 	let mut output_buf = BufWriter::new(&mut output);
 
@@ -555,51 +557,11 @@ fn process_markdown_file(
 		root_input_dir,
 	);
 
-	let mut output_file_path = root_output_dir.clone();
-	if input_file_path.starts_with(root_input_dir) {
-		output_file_path.push(
-			input_file_path
-				.strip_prefix(root_input_dir)
-				.unwrap_or_else(|e| {
-					panic!(
-						"Failed stripping prefix \"{}\" from \"{}\": {}",
-						root_input_dir.display(),
-						input_file_path.display(),
-						e
-					)
-				})
-				.with_extension("html"),
-		);
-	} else {
-		let full_root_input_path = fs::canonicalize(root_input_dir)
-			.unwrap_or_else(|e| {
-				panic!(
-					"Failed to canonicalize {}: {}",
-					root_input_dir.display(),
-					e
-				)
-			});
-		if input_file_path.starts_with(&full_root_input_path) {
-			output_file_path.push(
-				&input_file_path
-					.strip_prefix(&full_root_input_path)
-					.unwrap_or_else(|e| {
-						panic!(
-							"Failed stripping prefix \"{}\" from \"{}\": {}",
-							full_root_input_path.display(),
-							input_file_path.display(),
-							e
-						)
-					})
-					.with_extension("html"),
-			);
-		} else {
-			panic!(
-				"Unable to handle input file name: {}",
-				input_file_path.display()
-			)
-		}
-	}
+	let output_file_path = compute_output_file_path(
+		input_file_path,
+		root_input_dir,
+		root_output_dir,
+	);
 
 	let closest_output_dir = output_file_path.parent().unwrap_or_else(|| {
 		panic!(
@@ -662,6 +624,60 @@ fn process_markdown_file(
 		.to_path_buf()
 }
 
+fn compute_output_file_path(
+	input_file_path: &PathBuf,
+	root_input_dir: &PathBuf,
+	root_output_dir: &PathBuf,
+) -> PathBuf {
+	let mut path = root_output_dir.clone();
+	if input_file_path.starts_with(root_input_dir) {
+		path.push(
+			input_file_path
+				.strip_prefix(root_input_dir)
+				.unwrap_or_else(|e| {
+					panic!(
+						"Failed stripping prefix \"{}\" from \"{}\": {}",
+						root_input_dir.display(),
+						input_file_path.display(),
+						e
+					)
+				})
+				.with_extension("html"),
+		);
+	} else {
+		let full_root_input_path = fs::canonicalize(root_input_dir)
+			.unwrap_or_else(|e| {
+				panic!(
+					"Failed to canonicalize {}: {}",
+					root_input_dir.display(),
+					e
+				)
+			});
+		if input_file_path.starts_with(&full_root_input_path) {
+			path.push(
+				&input_file_path
+					.strip_prefix(&full_root_input_path)
+					.unwrap_or_else(|e| {
+						panic!(
+							"Failed stripping prefix \"{}\" from \"{}\": {}",
+							full_root_input_path.display(),
+							input_file_path.display(),
+							e
+						)
+					})
+					.with_extension("html"),
+			);
+		} else {
+			panic!(
+				"Unable to handle input file name: {}",
+				input_file_path.display()
+			)
+		}
+	}
+
+	path
+}
+
 fn write_html_page(
 	mut output_buf: &mut BufWriter<&mut Vec<u8>>,
 	front_matter: &FrontMatter,
@@ -679,101 +695,8 @@ fn write_html_page(
 		FirstCloseBracket,
 	}
 
-	fn write_to_output(output_buf: &mut BufWriter<&mut Vec<u8>>, data: &[u8]) {
-		output_buf.write_all(data).unwrap_or_else(|e| {
-			panic!("Failed writing \"{:?}\" to to buffer: {}.", data, e)
-		});
-	}
-
-	fn output_template_value(
-		mut output_buf: &mut BufWriter<&mut Vec<u8>>,
-		object: &mut Vec<u8>,
-		field: &mut Vec<u8>,
-		front_matter: &FrontMatter,
-		parser: &mut Parser,
-		input_file_path: &PathBuf,
-	) {
-		if object.is_empty() {
-			panic!("Empty object name.")
-		}
-		if field.is_empty() {
-			panic!("Empty field name.")
-		}
-
-		let object_str = String::from_utf8_lossy(object);
-		if object_str != "page" {
-			panic!("Unhandled object \"{}\"", object_str);
-		}
-
-		let field_str = String::from_utf8_lossy(field);
-		match field_str.borrow() {
-			"content" => html::write_html(&mut output_buf, parser)
-				.unwrap_or_else(|e| {
-					panic!(
-						"Failed converting Markdown file \"{}\" to HTML: {}.",
-						&input_file_path.display(),
-						e
-					)
-				}),
-			"date" => {
-				write_to_output(&mut output_buf, front_matter.date.as_bytes())
-			}
-			"title" => {
-				write_to_output(&mut output_buf, front_matter.title.as_bytes())
-			}
-			_ => {}
-		}
-		object.clear();
-		field.clear();
-	}
-
-	let mut template_file_path = PathBuf::from(root_input_dir);
-	template_file_path.push("_templates");
-	let input_file_parent = input_file_path.parent().unwrap_or_else(|| {
-		panic!("Failed to get parent from: {}", input_file_path.display())
-	});
-	let mut root_input_dir_corrected = root_input_dir.clone();
-	if !input_file_parent.starts_with(root_input_dir) {
-		let full_root_input_path = fs::canonicalize(root_input_dir)
-			.unwrap_or_else(|e| {
-				panic!(
-					"Failed to canonicalize {}: {}",
-					root_input_dir.display(),
-					e
-				)
-			});
-		if input_file_path.starts_with(&full_root_input_path) {
-			root_input_dir_corrected = full_root_input_path
-		}
-	}
-	let mut template_name = if input_file_parent == root_input_dir_corrected {
-		input_file_path
-			.file_name()
-			.unwrap_or_else(|| {
-				panic!(
-					"Missing file name in path: {}",
-					input_file_path.display()
-				)
-			})
-			.to_string_lossy()
-			.to_string()
-	} else {
-		input_file_parent
-			.file_name()
-			.unwrap_or_else(|| {
-				panic!(
-					"Failed to get file name of parent of: {}",
-					input_file_path.display()
-				)
-			})
-			.to_string_lossy()
-			.to_string()
-	};
-	if template_name.ends_with('s') {
-		template_name.truncate(template_name.len() - 1)
-	}
-	template_file_path.push(template_name);
-	template_file_path.set_extension("html");
+	let template_file_path =
+		compute_template_file_path(input_file_path, root_input_dir);
 	let mut template_file =
 		fs::File::open(&template_file_path).unwrap_or_else(|e| {
 			panic!(
@@ -872,6 +795,110 @@ fn write_html_page(
 			}
 		}
 	}
+}
+
+fn compute_template_file_path(
+	input_file_path: &PathBuf,
+	root_input_dir: &PathBuf,
+) -> PathBuf {
+	let mut template_file_path = PathBuf::from(root_input_dir);
+	template_file_path.push("_templates");
+	let input_file_parent = input_file_path.parent().unwrap_or_else(|| {
+		panic!("Failed to get parent from: {}", input_file_path.display())
+	});
+	let mut root_input_dir_corrected = root_input_dir.clone();
+	if !input_file_parent.starts_with(root_input_dir) {
+		let full_root_input_path = fs::canonicalize(root_input_dir)
+			.unwrap_or_else(|e| {
+				panic!(
+					"Failed to canonicalize {}: {}",
+					root_input_dir.display(),
+					e
+				)
+			});
+		if input_file_path.starts_with(&full_root_input_path) {
+			root_input_dir_corrected = full_root_input_path
+		}
+	}
+	let mut template_name = if input_file_parent == root_input_dir_corrected {
+		input_file_path
+			.file_name()
+			.unwrap_or_else(|| {
+				panic!(
+					"Missing file name in path: {}",
+					input_file_path.display()
+				)
+			})
+			.to_string_lossy()
+			.to_string()
+	} else {
+		input_file_parent
+			.file_name()
+			.unwrap_or_else(|| {
+				panic!(
+					"Failed to get file name of parent of: {}",
+					input_file_path.display()
+				)
+			})
+			.to_string_lossy()
+			.to_string()
+	};
+	if template_name.ends_with('s') {
+		template_name.truncate(template_name.len() - 1)
+	}
+	template_file_path.push(template_name);
+	template_file_path.set_extension("html");
+
+	template_file_path
+}
+
+fn write_to_output(output_buf: &mut BufWriter<&mut Vec<u8>>, data: &[u8]) {
+	output_buf.write_all(data).unwrap_or_else(|e| {
+		panic!("Failed writing \"{:?}\" to to buffer: {}.", data, e)
+	});
+}
+
+fn output_template_value(
+	mut output_buf: &mut BufWriter<&mut Vec<u8>>,
+	object: &mut Vec<u8>,
+	field: &mut Vec<u8>,
+	front_matter: &FrontMatter,
+	parser: &mut Parser,
+	input_file_path: &PathBuf,
+) {
+	if object.is_empty() {
+		panic!("Empty object name.")
+	}
+	if field.is_empty() {
+		panic!("Empty field name.")
+	}
+
+	let object_str = String::from_utf8_lossy(object);
+	if object_str != "page" {
+		panic!("Unhandled object \"{}\"", object_str);
+	}
+
+	let field_str = String::from_utf8_lossy(field);
+	match field_str.borrow() {
+		"content" => {
+			html::write_html(&mut output_buf, parser).unwrap_or_else(|e| {
+				panic!(
+					"Failed converting Markdown file \"{}\" to HTML: {}.",
+					&input_file_path.display(),
+					e
+				)
+			})
+		}
+		"date" => {
+			write_to_output(&mut output_buf, front_matter.date.as_bytes())
+		}
+		"title" => {
+			write_to_output(&mut output_buf, front_matter.title.as_bytes())
+		}
+		_ => {}
+	}
+	object.clear();
+	field.clear();
 }
 
 fn handle_read(stream: &mut TcpStream) -> Option<ReadResult> {
