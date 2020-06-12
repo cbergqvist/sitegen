@@ -495,6 +495,11 @@ fn get_markdown_files(
 								"Skipping '_'-prefixed dir: {}",
 								path.display()
 							);
+						} else if file_name.to_string_lossy().starts_with('.') {
+							println!(
+								"Skipping '.'-prefixed dir: {}",
+								path.display()
+							);
 						} else {
 							let mut subdir_files =
 								get_markdown_files(&path, markdown_extension);
