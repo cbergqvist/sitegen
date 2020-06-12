@@ -951,9 +951,10 @@ fn output_template_value(
 	}
 
 	let field_str = String::from_utf8_lossy(field);
-	// TODO: More front matter fields
 	match field_str.borrow() {
 		"content" => {
+			// This only works once, but it would be weird to have the content
+			// repeated multiple times.
 			html::write_html(&mut output_buf, parser).unwrap_or_else(|e| {
 				panic!(
 					"Failed converting Markdown file \"{}\" to HTML: {}.",
@@ -968,7 +969,30 @@ fn output_template_value(
 		"title" => {
 			write_to_output(&mut output_buf, front_matter.title.as_bytes())
 		}
-		_ => panic!("Not yet supported field: {}.{}", object_str, field_str),
+		"published" => write_to_output(
+			&mut output_buf,
+			if front_matter.published {
+				b"true"
+			} else {
+				b"false"
+			},
+		),
+		"edited" => {
+			if let Some(edited) = &front_matter.edited {
+				write_to_output(&mut output_buf, edited.as_bytes())
+			}
+		}
+		// TODO: categories
+		// TODO: tags
+		// TODO: layout
+		_ => {
+			if let Some(value) = front_matter.custom_attributes.get(&*field_str)
+			{
+				write_to_output(&mut output_buf, value.as_bytes())
+			} else {
+				panic!("Not yet supported field: {}.{}", object_str, field_str)
+			}
+		}
 	}
 	object.clear();
 	field.clear();
