@@ -1,6 +1,6 @@
 use std::borrow::Borrow;
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io::{
 	BufRead, BufReader, BufWriter, ErrorKind, Read, Seek, SeekFrom, Write,
 };
@@ -261,20 +261,23 @@ fn watch_fs(
 			panic!("Unable to watch {}: {}", input_dir.display(), e);
 		});
 
+	let html_extension = OsStr::new("html");
 	loop {
 		match rx.recv() {
-			Ok(event) => match event {
-				notify::DebouncedEvent::Write(mut path)
-				| notify::DebouncedEvent::Create(mut path) => {
-					path = path.canonicalize().unwrap_or_else(|e| {
-						panic!(
-							"Canonicalization of {} failed: {}",
-							path.display(),
-							e
-						)
-					});
-					let path_to_communicate =
-						if is_file_with_extension(&path, &markdown_extension) {
+			Ok(event) => {
+				println!("Got {:?}", event);
+				match event {
+					notify::DebouncedEvent::Write(mut path)
+					| notify::DebouncedEvent::Create(mut path) => {
+						path = path.canonicalize().unwrap_or_else(|e| {
+							panic!(
+								"Canonicalization of {} failed: {}",
+								path.display(),
+								e
+							)
+						});
+						let mut path_to_communicate = None;
+						if path.extension() == Some(markdown_extension) {
 							match fs::create_dir(&output_dir) {
 								Ok(_) => {}
 								Err(e) => {
@@ -288,30 +291,88 @@ fn watch_fs(
 								}
 							}
 
-							Some(process_markdown_file(
+							path_to_communicate = Some(process_markdown_file(
 								&path,
 								&input_dir,
 								&output_dir,
-							))
-						} else {
-							None
-						};
+							));
+						} else if path.extension() == Some(html_extension) {
+							let parent_path =
+								path.parent().unwrap_or_else(|| {
+									panic!(
+										"Path without a parent directory?: {}",
+										path.display()
+									)
+								});
+							if parent_path.file_name().unwrap_or_else(|| {
+								panic!(
+									"Missing file name in path: {}",
+									parent_path.display()
+								)
+							}) == "_templates"
+							{
+								let file_stem =
+									path.file_stem().unwrap_or_else(|| {
+										panic!(
+											"Missing file stem in path: {}",
+											path.display()
+										)
+									});
+								let mut dir_name = OsString::from(file_stem);
+								dir_name.push("s");
+								let markdown_dir = input_dir.join(dir_name);
+								let markdown_files = if markdown_dir.exists() {
+									get_markdown_files(
+										&markdown_dir,
+										markdown_extension,
+									)
+								} else {
+									Vec::new()
+								};
 
-					let (mutex, cvar) = &**fs_cond;
+								if !markdown_files.is_empty() {
+									let mut output_files = Vec::new();
+									for file_name in &markdown_files {
+										output_files.push(
+											process_markdown_file(
+												&file_name,
+												&input_dir,
+												&output_dir,
+											),
+										)
+									}
+									path_to_communicate =
+										output_files.first().cloned();
+								} else {
+									let templated_file = input_dir
+										.join(file_stem)
+										.with_extension(markdown_extension);
+									if templated_file.exists() {
+										path_to_communicate =
+											Some(process_markdown_file(
+												&templated_file,
+												&input_dir,
+												&output_dir,
+											));
+									}
+								}
+							}
+						}
 
-					let mut refresh = mutex.lock().unwrap_or_else(|e| {
-						panic!("Failed locking mutex: {}", e)
-					});
-					if path_to_communicate.is_some() {
+						let (mutex, cvar) = &**fs_cond;
+
+						let mut refresh = mutex.lock().unwrap_or_else(|e| {
+							panic!("Failed locking mutex: {}", e)
+						});
 						refresh.file = path_to_communicate;
+						refresh.index += 1;
+						cvar.notify_all();
 					}
-					refresh.index += 1;
-					cvar.notify_all();
+					_ => {
+						println!("Skipping event.");
+					}
 				}
-				_ => {
-					println!("Skipping {:?}", event);
-				}
-			},
+			}
 			Err(e) => panic!("Watch error: {}", e),
 		}
 	}
@@ -389,10 +450,6 @@ fn parse_args(
 	}
 }
 
-fn is_file_with_extension(path: &PathBuf, extension: &OsStr) -> bool {
-	path.extension() == Some(extension)
-}
-
 fn get_markdown_files(
 	input_dir: &PathBuf,
 	markdown_extension: &OsStr,
@@ -411,7 +468,7 @@ fn get_markdown_files(
 				let path = entry.path();
 				if let Ok(ft) = entry.file_type() {
 					if ft.is_file() {
-						if is_file_with_extension(&path, markdown_extension) {
+						if path.extension() == Some(markdown_extension) {
 							files.push(path);
 							println!(
 								"Markdown!: \"{}\"",
@@ -695,7 +752,12 @@ fn write_html_page(
 	let mut template_name = if input_file_parent == root_input_dir_corrected {
 		input_file_path
 			.file_name()
-			.unwrap()
+			.unwrap_or_else(|| {
+				panic!(
+					"Missing file name in path: {}",
+					input_file_path.display()
+				)
+			})
 			.to_string_lossy()
 			.to_string()
 	} else {
