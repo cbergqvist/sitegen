@@ -1059,16 +1059,14 @@ fn handle_read(stream: &mut TcpStream) -> Option<ReadResult> {
 		Ok(size) => {
 			if size == buf.len() {
 				panic!("Request sizes as large as {} are not supported.", size)
-			}
-
-			let req_str = String::from_utf8_lossy(&buf);
-			if req_str.len() == 0 {
+			} else if size == 0 {
 				// Saw this occur once before adding the code path to avoid
 				// panic! further down. Not sure about the cause of it.
 				println!("WARNING: Invalid request? {:?}", &buf[0..=32]);
 				return None;
 			}
 
+			let req_str = String::from_utf8_lossy(&buf);
 			println!("Request (size: {}):\n{}", size, req_str);
 			let mut lines = req_str.lines();
 			if let Some(first_line) = lines.next() {
