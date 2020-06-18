@@ -1206,18 +1206,18 @@ socket.close()
 </script>
 <style type=\"text/css\">
 BODY {{
-font-family: \"Helvetica Neue\", Helvetica, Arial, sans-serif;
-margin: 0;
+	font-family: \"Helvetica Neue\", Helvetica, Arial, sans-serif;
+	margin: 0;
 }}
 .banner {{
-background: rgba(0, 0, 255, 0.2);
-position: fixed;
+	background: rgba(0, 0, 255, 0.2);
+	position: fixed;
 }}
 </style>
 </head>
 <body>
 <div class=\"banner\">Preview, save Markdown file to disk for live reload:</div>
-<iframe name=\"preview\"{} style=\"border:1px solid #eee; margin: 1px; width: 100%; height: 100%\"></iframe>
+<iframe name=\"preview\"{} style=\"border: 0; margin: 0; width: 100%; height: 100%\"></iframe>
 </body>
 </html>\r\n", iframe_src).as_bytes(), &mut stream);
 	}
