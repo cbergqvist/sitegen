@@ -1228,11 +1228,13 @@ fn handle_websocket(
 ) {
 	// Based on WebSocket RFC - https://tools.ietf.org/html/rfc6455
 	const FINAL_FRAME: u8 = 0b1000_0000;
-	const BINARY_OPCODE: u8 = 0b0000_0010;
+	const BINARY_MESSAGE_OPCODE: u8 = 0b0000_0010;
 	const CLOSE_OPCODE: u8 = 0b0000_1000;
-	const CLOSE_HEADER: u8 = FINAL_FRAME | CLOSE_OPCODE;
+	const PING_OPCODE: u8 = 0b0000_1001;
+	const PONG_OPCODE: u8 = 0b0000_1010;
 	const ZERO_LENGTH: u8 = 0;
-	const CLOSE_FRAME: [u8; 2] = [CLOSE_HEADER, ZERO_LENGTH];
+	const CLOSE_FRAME: [u8; 2] = [FINAL_FRAME | CLOSE_OPCODE, ZERO_LENGTH];
+	const MASK_BIT: u8 = 0b1000_0000;
 
 	let mut m = sha1::Sha1::new();
 	m.update(key.as_bytes());
@@ -1262,26 +1264,56 @@ fn handle_websocket(
 			.unwrap_or_else(|e| panic!("Failed waiting: {}", e));
 
 		if result.timed_out() {
-			let mut buf = [0_u8; 16];
+			// TODO: Code doesn't handle multiple packets coming at once.
+			//
+			// Previously received ping packet with extra data:
+			//     [137, 132, 6, 124, 143, 87, 86, 53, 193, 16]
+
+			let mut buf = [0_u8; 128];
 			let size =
 				stream.read(&mut buf).unwrap_or_else(|e| match e.kind() {
 					ErrorKind::WouldBlock => 0,
 					_ => panic!("Failed reading: {}", e),
 				});
 			if size > 0 {
-				// Is it a close frame?
-				if buf[0] & 0b1000_1111 == CLOSE_HEADER {
-					println!(
-						"Received WebSocket connection close, responding in kind."
-					);
-					write(&CLOSE_FRAME, &mut stream);
-					return;
-				} else {
-					println!(
-						"WARNING: Received unhandled packet: {:?} ({} bytes)",
-						&buf[0..size],
-						size
-					);
+				if size < 2 {
+					panic!("Invalid frame.");
+				}
+				if buf[0] & FINAL_FRAME == 0 {
+					panic!("Multi-frame communication is not supported yet.");
+				}
+				if buf[1] & MASK_BIT == 0 {
+					panic!("Client is always supposed to set mask bit.");
+				}
+
+				match buf[0] & 0b0000_1111 {
+					CLOSE_OPCODE => {
+						println!(
+							"Received WebSocket connection close, responding in kind."
+						);
+						write(&CLOSE_FRAME, &mut stream);
+						return;
+					}
+					PING_OPCODE => {
+						println!("Got ping message!");
+						let message_len = buf[1] & !MASK_BIT;
+						if message_len as usize > buf.len() - 2 {
+							panic!("Woops, our buffer is too small for a message of length: {}", message_len);
+						}
+						let frame = [FINAL_FRAME | PONG_OPCODE, message_len];
+						write(&frame, &mut stream);
+						write(
+							&buf[2usize..(message_len + 2) as usize],
+							&mut stream,
+						);
+					}
+					_ => {
+						println!(
+							"WARNING: Received packet with unhandled opcode: {:?} ({} bytes)",
+							&buf[0..size],
+							size
+						);
+					}
 				}
 			}
 		} else {
@@ -1294,10 +1326,11 @@ fn handle_websocket(
 			};
 			let length = message.len();
 			if length > 125 {
-				panic!("Don't support variable-length WebSocket frames yet.")
+				panic!("Don't support sending variable-length WebSocket frames yet.")
 			}
 
-			let frame = [FINAL_FRAME | BINARY_OPCODE, length.to_le_bytes()[0]];
+			let frame =
+				[FINAL_FRAME | BINARY_MESSAGE_OPCODE, length.to_le_bytes()[0]];
 			write(&frame, &mut stream);
 			write(message.as_bytes(), &mut stream);
 		}
