@@ -390,6 +390,7 @@ fn get_path_to_refresh(
 
 	None
 }
+
 fn parse_args(
 	bool_args: &mut Vec<&mut BoolArg>,
 	i16_args: &mut Vec<&mut I16Arg>,
