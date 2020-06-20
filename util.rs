@@ -1,5 +1,4 @@
 use std::io::Write;
-use std::net::TcpStream;
 use std::path::PathBuf;
 
 pub struct Refresh {
@@ -7,7 +6,7 @@ pub struct Refresh {
 	pub file: Option<PathBuf>,
 }
 
-pub fn write(bytes: &[u8], stream: &mut TcpStream) {
+pub fn write<T: Write>(bytes: &[u8], stream: &mut T) {
 	match stream.write_all(bytes) {
 		Ok(()) => println!("Wrote {} bytes.", bytes.len()),
 		Err(e) => println!("WARNING: Failed sending response: {}", e),
