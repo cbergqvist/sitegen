@@ -1272,7 +1272,6 @@ fn handle_websocket(
 		"Failed changing WebSocket TCP connection to nonblocking mode.",
 	);
 
-	#[derive(Debug)]
 	enum State {
 		None,
 		ReadOp(u8),
@@ -1309,6 +1308,8 @@ fn handle_websocket(
 			let mut buf_offset = 0_usize;
 			loop {
 				if buf_offset >= read_size {
+					// Allow an additional match below even though we might have
+					// reached the end of the buffer.
 					if let State::PayloadRead(..) = read_state {
 					} else {
 						break;
@@ -1339,9 +1340,8 @@ fn handle_websocket(
 						State::ReadingKeymask(op, payload_len, Vec::new())
 					}
 					State::ReadingKeymask(op, payload_len, mut keymask) => {
-						let remaining_keymask =
-							MASKING_KEY_SIZE - keymask.len();
-						let keymask_end = buf_offset + remaining_keymask;
+						let keymask_end =
+							buf_offset + (MASKING_KEY_SIZE - keymask.len());
 						if keymask_end > read_size {
 							keymask.extend_from_slice(&buf[buf_offset..]);
 							buf_offset = read_size;
@@ -1389,18 +1389,13 @@ fn handle_websocket(
 								&buf[buf_offset..payload_end],
 							);
 
-							let payload_len_usize = usize::from(payload_len);
-
-							let mut unmasked_payload =
-								Vec::with_capacity(payload_len_usize);
 							for i in 0..incoming_payload.len() {
-								let value = incoming_payload[i]
+								incoming_payload[i] = incoming_payload[i]
 									^ keymask[i % MASKING_KEY_SIZE];
-								unmasked_payload.push(value);
 							}
 
 							buf_offset = payload_end;
-							State::PayloadRead(op, unmasked_payload)
+							State::PayloadRead(op, incoming_payload)
 						}
 					}
 					State::PayloadRead(op, payload) => {
@@ -1444,9 +1439,9 @@ fn handle_websocket_frame(
 			let (status_code, message): (Option<NonZeroU16>, String) =
 				if payload.len() > 1 {
 					(
-						NonZeroU16::new(
-							u16::from(payload[0]) << 8 | u16::from(payload[1]),
-						)
+						NonZeroU16::new(u16::from_be_bytes([
+							payload[0], payload[1],
+						]))
 						.or_else(|| {
 							panic!("Zero status codes are not allowed according to the WebSocket RFC.")
 						}),
@@ -1461,9 +1456,10 @@ fn handle_websocket_frame(
 
 			let mut return_frame = Vec::with_capacity(4);
 			return_frame.push(FINAL_FRAGMENT | CLOSE_OPCODE);
-			if status_code.is_some() {
+			if let Some(status_code) = status_code {
 				return_frame.push(2);
-				return_frame.extend_from_slice(&payload[0..2]);
+				return_frame
+					.extend_from_slice(&status_code.get().to_be_bytes());
 			} else {
 				return_frame.push(0);
 			};
