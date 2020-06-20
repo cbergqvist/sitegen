@@ -1,3 +1,4 @@
+use std::num::NonZeroU16;
 use std::borrow::Borrow;
 use std::collections::BTreeMap;
 use std::convert::TryInto;
@@ -1325,10 +1326,12 @@ fn handle_websocket(
 
 				match frame[0] & 0b0000_1111 {
 					CLOSE_OPCODE => {
-						let (status_code, message): (Option<u16>, String) =
+						// Per the WebSocket standard, status codes 0-999 are
+						// not used, so we can use NonZeroU16.
+						let (status_code, message): (Option<NonZeroU16>, String) =
 							if payload_len > 1 {
 								(
-									Some(
+									NonZeroU16::new(
 										u16::from(payload[0]) << 8
 											| u16::from(payload[1]),
 									),
