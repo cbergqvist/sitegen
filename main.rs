@@ -1,5 +1,6 @@
 use std::borrow::Borrow;
 use std::collections::BTreeMap;
+use std::convert::TryInto;
 use std::ffi::{OsStr, OsString};
 use std::io::{
 	BufRead, BufReader, BufWriter, ErrorKind, Read, Seek, SeekFrom, Write,
@@ -1302,19 +1303,21 @@ fn handle_websocket(
 				if buf[frame_offset + 1] & MASK_BIT == 0 {
 					panic!("Client is always supposed to set mask bit.");
 				}
-				let payload_len = (buf[frame_offset + 1] & !MASK_BIT) as usize;
+				let payload_len = buf[frame_offset + 1] & !MASK_BIT;
+				let payload_len_usize = usize::from(payload_len);
 				if payload_len > 125 {
 					panic!("Server only expects control frames, which per RFC 6455 only have payloads of 125 bytes or less.");
 				}
-				if payload_len > remaining_size - 2 - MASKING_KEY_SIZE {
+				if payload_len_usize > remaining_size - 2 - MASKING_KEY_SIZE {
 					panic!("Whoops, remaining buffer is too small for a payload of length: {}, detected unsupported package split.", payload_len);
 				}
 
 				let frame = &buf[frame_offset
-					..(frame_offset + 2 + MASKING_KEY_SIZE + payload_len)];
+					..(frame_offset
+						+ 2 + MASKING_KEY_SIZE + payload_len_usize)];
 				let masking_key = &frame[2..2 + MASKING_KEY_SIZE];
-				let mut payload = Vec::with_capacity(payload_len);
-				for i in 0..payload_len {
+				let mut payload = Vec::with_capacity(payload_len_usize);
+				for i in 0..payload_len_usize {
 					let value = frame[2 + MASKING_KEY_SIZE + i]
 						^ masking_key[i % MASKING_KEY_SIZE];
 					payload.push(value);
@@ -1326,8 +1329,8 @@ fn handle_websocket(
 							if payload_len > 1 {
 								(
 									Some(
-										(payload[0] as u16) << 8
-											| payload[1] as u16,
+										u16::from(payload[0]) << 8
+											| u16::from(payload[1]),
 									),
 									String::from_utf8_lossy(&payload[2..])
 										.to_string(),
@@ -1356,7 +1359,7 @@ fn handle_websocket(
 							payload_len, payload
 						);
 						let header =
-							[FINAL_FRAGMENT | PONG_OPCODE, payload_len as u8];
+							[FINAL_FRAGMENT | PONG_OPCODE, payload_len];
 						write(&header, &mut stream);
 						write(&payload, &mut stream);
 					}
@@ -1367,28 +1370,28 @@ fn handle_websocket(
 						);
 					}
 				}
-				frame_offset += 2 + MASKING_KEY_SIZE + payload_len;
+				frame_offset += 2 + MASKING_KEY_SIZE + payload_len_usize;
 				remaining_size = read_size - frame_offset;
 			}
 		} else {
-			let message = if let Some(path) = &guard.file {
+			let changed_file = if let Some(path) = &guard.file {
 				String::from(path.to_string_lossy())
 			} else {
 				String::from("")
 			};
-			println!("Received file change notification ({}), time to notify the browser.", message);
+			println!("Received file change notification ({}), time to notify the browser.", changed_file);
 
-			let payload_len = message.len();
-			if payload_len > 125 {
+			let changed_file_len: u8 =
+				changed_file.len().try_into().unwrap_or_else(|e|
+					panic!("Changed file path was too long ({}) to fit into expected u8: {}", changed_file.len(), e));
+			if changed_file_len > 125 {
 				panic!("Don't support sending variable-length WebSocket frames yet.")
 			}
 
-			let header = [
-				FINAL_FRAGMENT | BINARY_MESSAGE_OPCODE,
-				payload_len.to_le_bytes()[0],
-			];
+			let header =
+				[FINAL_FRAGMENT | BINARY_MESSAGE_OPCODE, changed_file_len];
 			write(&header, &mut stream);
-			write(message.as_bytes(), &mut stream);
+			write(changed_file.as_bytes(), &mut stream);
 		}
 	}
 }
