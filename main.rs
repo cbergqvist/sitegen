@@ -81,6 +81,20 @@ enum ReadResult {
 	WebSocket(String),
 }
 
+enum WebSocketFrameResult {
+	Close,
+	Continue,
+}
+
+// Based on WebSocket RFC - https://tools.ietf.org/html/rfc6455
+const FINAL_FRAGMENT: u8 = 0b1000_0000;
+const BINARY_MESSAGE_OPCODE: u8 = 0b0000_0010;
+const CLOSE_OPCODE: u8 = 0b0000_1000;
+const PING_OPCODE: u8 = 0b0000_1001;
+const PONG_OPCODE: u8 = 0b0000_1010;
+const MASK_BIT: u8 = 0b1000_0000;
+const MASKING_KEY_SIZE: usize = 4;
+
 fn main() {
 	// Not using the otherwise brilliant CLAP crate since I detest string matching args to get their values.
 	let mut help_arg = BoolArg {
@@ -1247,15 +1261,6 @@ fn handle_websocket(
 	key: &str,
 	cond_pair: &Arc<(Mutex<Refresh>, Condvar)>,
 ) {
-	// Based on WebSocket RFC - https://tools.ietf.org/html/rfc6455
-	const FINAL_FRAGMENT: u8 = 0b1000_0000;
-	const BINARY_MESSAGE_OPCODE: u8 = 0b0000_0010;
-	const CLOSE_OPCODE: u8 = 0b0000_1000;
-	const PING_OPCODE: u8 = 0b0000_1001;
-	const PONG_OPCODE: u8 = 0b0000_1010;
-	const MASK_BIT: u8 = 0b1000_0000;
-	const MASKING_KEY_SIZE: usize = 4;
-
 	let mut m = sha1::Sha1::new();
 	m.update(key.as_bytes());
 	m.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
@@ -1266,6 +1271,16 @@ fn handle_websocket(
 	stream.set_nonblocking(true).expect(
 		"Failed changing WebSocket TCP connection to nonblocking mode.",
 	);
+
+	#[derive(Debug)]
+	enum State {
+		None,
+		ReadOp(u8),
+		ReadingKeymask(u8, u8, Vec<u8>),
+		ReadingPayload(u8, u8, Vec<u8>, Vec<u8>),
+		PayloadRead(u8, Vec<u8>),
+	}
+	let mut read_state = State::None;
 
 	let (mutex, cvar) = &**cond_pair;
 	loop {
@@ -1284,7 +1299,6 @@ fn handle_websocket(
 			.unwrap_or_else(|e| panic!("Failed waiting: {}", e));
 
 		if result.timed_out() {
-			// TODO: Doesn't handle frames being split at the end of `buf`.
 			let mut buf = [0_u8; 64 * 1024];
 			let read_size =
 				stream.read(&mut buf).unwrap_or_else(|e| match e.kind() {
@@ -1292,92 +1306,110 @@ fn handle_websocket(
 					_ => panic!("Failed reading: {}", e),
 				});
 
-			let mut remaining_size = read_size;
-			let mut frame_offset = 0_usize;
-			while remaining_size > 0 {
-				if remaining_size < 2 {
-					panic!("Invalid frame of {} bytes. Code doesn't handle partial frames.", remaining_size);
-				}
-				if buf[frame_offset] & FINAL_FRAGMENT == 0 {
-					panic!("Multi-fragment frames are not supported yet. Offset: {}, buffer: {:?}", frame_offset, &buf[0..1024]);
-				}
-				if buf[frame_offset + 1] & MASK_BIT == 0 {
-					panic!("Client is always supposed to set mask bit.");
-				}
-				let payload_len = buf[frame_offset + 1] & !MASK_BIT;
-				let payload_len_usize = usize::from(payload_len);
-				if payload_len > 125 {
-					panic!("Server only expects control frames, which per RFC 6455 only have payloads of 125 bytes or less.");
-				}
-				if payload_len_usize > remaining_size - 2 - MASKING_KEY_SIZE {
-					panic!("Whoops, remaining buffer is too small for a payload of length: {}, detected unsupported package split.", payload_len);
+			let mut buf_offset = 0_usize;
+			loop {
+				if buf_offset >= read_size {
+					if let State::PayloadRead(..) = read_state {
+					} else {
+						break;
+					}
 				}
 
-				let frame = &buf[frame_offset
-					..(frame_offset
-						+ 2 + MASKING_KEY_SIZE + payload_len_usize)];
-				let masking_key = &frame[2..2 + MASKING_KEY_SIZE];
-				let mut payload = Vec::with_capacity(payload_len_usize);
-				for i in 0..payload_len_usize {
-					let value = frame[2 + MASKING_KEY_SIZE + i]
-						^ masking_key[i % MASKING_KEY_SIZE];
-					payload.push(value);
-				}
-
-				match frame[0] & 0b0000_1111 {
-					CLOSE_OPCODE => {
-						let (status_code, message): (
-							Option<NonZeroU16>,
-							String,
-						) = if payload_len > 1 {
-							(
-								NonZeroU16::new(
-									u16::from(payload[0]) << 8
-										| u16::from(payload[1]),
+				read_state = match read_state {
+					State::None => {
+						let op_byte = buf[buf_offset];
+						if op_byte & FINAL_FRAGMENT == 0 {
+							panic!("Multi-fragment frames are not supported. Offset: {}, buffer: {:?}", buf_offset, &buf[buf_offset..usize::min(buf_offset + 128, buf.len())]);
+						}
+						buf_offset += 1;
+						let op = op_byte & 0b0000_1111;
+						State::ReadOp(op)
+					}
+					State::ReadOp(op) => {
+						if buf[buf_offset] & MASK_BIT == 0 {
+							panic!(
+								"Client is always supposed to set mask bit."
+							);
+						}
+						let payload_len = buf[buf_offset] & !MASK_BIT;
+						if payload_len > 125 {
+							panic!("Server only expects control frames, which per RFC 6455 only have payloads of 125 bytes or less.");
+						}
+						buf_offset += 1;
+						State::ReadingKeymask(op, payload_len, Vec::new())
+					}
+					State::ReadingKeymask(op, payload_len, mut keymask) => {
+						let remaining_keymask =
+							MASKING_KEY_SIZE - keymask.len();
+						let keymask_end = buf_offset + remaining_keymask;
+						if keymask_end > read_size {
+							keymask.extend_from_slice(&buf[buf_offset..]);
+							buf_offset = read_size;
+							State::ReadingKeymask(op, payload_len, keymask)
+						} else {
+							keymask.extend_from_slice(
+								&buf[buf_offset..keymask_end],
+							);
+							buf_offset = keymask_end;
+							if payload_len > 0 {
+								State::ReadingPayload(
+									op,
+									payload_len,
+									keymask,
+									Vec::new(),
 								)
-								.or_else(|| {
-									panic!("Zero status codes are not allowed according to the WebSocket RFC.")
-								}),
-								String::from_utf8_lossy(&payload[2..])
-									.to_string(),
+							} else {
+								State::PayloadRead(op, Vec::new())
+							}
+						}
+					}
+					State::ReadingPayload(
+						op,
+						payload_len,
+						keymask,
+						mut incoming_payload,
+					) => {
+						let remaining_payload =
+							usize::from(incoming_payload[1] & !MASK_BIT)
+								- incoming_payload.len();
+						let payload_end = buf_offset + remaining_payload;
+
+						if payload_end > read_size {
+							incoming_payload
+								.extend_from_slice(&buf[buf_offset..]);
+							buf_offset = read_size;
+							State::ReadingPayload(
+								op,
+								payload_len,
+								keymask,
+								incoming_payload,
 							)
 						} else {
-							(None, String::from(""))
-						};
-						println!(
-							"Received WebSocket connection close, responding in kind. Payload size: {}, Status code: {:?}, message: {}", payload_len, status_code, message
-						);
+							incoming_payload.extend_from_slice(
+								&buf[buf_offset..payload_end],
+							);
 
-						let mut return_frame = Vec::with_capacity(4);
-						return_frame.push(FINAL_FRAGMENT | CLOSE_OPCODE);
-						if status_code.is_some() {
-							return_frame.push(2);
-							return_frame.extend_from_slice(&payload[0..2]);
-						} else {
-							return_frame.push(0);
-						};
-						write(&return_frame, &mut stream);
-						return;
+							let payload_len_usize = usize::from(payload_len);
+
+							let mut unmasked_payload =
+								Vec::with_capacity(payload_len_usize);
+							for i in 0..incoming_payload.len() {
+								let value = incoming_payload[i]
+									^ keymask[i % MASKING_KEY_SIZE];
+								unmasked_payload.push(value);
+							}
+
+							buf_offset = payload_end;
+							State::PayloadRead(op, unmasked_payload)
+						}
 					}
-					PING_OPCODE => {
-						println!(
-							"Got PING message with payload size: {}, responding with PONG, payload: {:?}",
-							payload_len, payload
-						);
-						let header =
-							[FINAL_FRAGMENT | PONG_OPCODE, payload_len];
-						write(&header, &mut stream);
-						write(&payload, &mut stream);
-					}
-					_ => {
-						println!(
-							"WARNING: Received frame with unhandled opcode: {:?}",
-							&frame,
-						);
+					State::PayloadRead(op, payload) => {
+						match handle_websocket_frame(&mut stream, op, payload) {
+							WebSocketFrameResult::Close => return,
+							WebSocketFrameResult::Continue => State::None,
+						}
 					}
 				}
-				frame_offset += 2 + MASKING_KEY_SIZE + payload_len_usize;
-				remaining_size = read_size - frame_offset;
 			}
 		} else {
 			let changed_file = if let Some(path) = &guard.file {
@@ -1398,6 +1430,67 @@ fn handle_websocket(
 				[FINAL_FRAGMENT | BINARY_MESSAGE_OPCODE, changed_file_len];
 			write(&header, &mut stream);
 			write(changed_file.as_bytes(), &mut stream);
+		}
+	}
+}
+
+fn handle_websocket_frame(
+	mut stream: &mut TcpStream,
+	op: u8,
+	payload: Vec<u8>,
+) -> WebSocketFrameResult {
+	match op {
+		CLOSE_OPCODE => {
+			let (status_code, message): (Option<NonZeroU16>, String) =
+				if payload.len() > 1 {
+					(
+						NonZeroU16::new(
+							u16::from(payload[0]) << 8 | u16::from(payload[1]),
+						)
+						.or_else(|| {
+							panic!("Zero status codes are not allowed according to the WebSocket RFC.")
+						}),
+						String::from_utf8_lossy(&payload[2..]).to_string(),
+					)
+				} else {
+					(None, String::from(""))
+				};
+			println!(
+				"Received WebSocket connection close, responding in kind. Payload size: {}, Status code: {:?}, message: {}", payload.len(), status_code, message
+			);
+
+			let mut return_frame = Vec::with_capacity(4);
+			return_frame.push(FINAL_FRAGMENT | CLOSE_OPCODE);
+			if status_code.is_some() {
+				return_frame.push(2);
+				return_frame.extend_from_slice(&payload[0..2]);
+			} else {
+				return_frame.push(0);
+			};
+			write(&return_frame, &mut stream);
+
+			WebSocketFrameResult::Close
+		}
+		PING_OPCODE => {
+			println!(
+				"Got PING message, responding with PONG, payload: {:?}",
+				payload
+			);
+			let header = [
+				FINAL_FRAGMENT | PONG_OPCODE,
+				payload.len().try_into().unwrap_or_else(|e| {
+					panic!("Unexpected payload size ({}): {}", payload.len(), e)
+				}),
+			];
+			write(&header, &mut stream);
+			write(&payload, &mut stream);
+
+			WebSocketFrameResult::Continue
+		}
+		_ => {
+			println!("WARNING: Received frame with unhandled opcode: {:X}", op,);
+
+			WebSocketFrameResult::Continue
 		}
 	}
 }
