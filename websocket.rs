@@ -16,9 +16,13 @@ const PONG_OPCODE: u8 = 0b0000_1010;
 const MASK_BIT: u8 = 0b1000_0000;
 const MASKING_KEY_SIZE: usize = 4;
 
-enum FrameResult {
+enum ReadState {
+	None,
+	ReadOp(u8),
+	ReadingKeymask(u8, u8, Vec<u8>),
+	ReadingPayload(u8, u8, Vec<u8>, Vec<u8>),
+	PayloadRead(u8, Vec<u8>),
 	Close,
-	Continue,
 }
 
 pub fn handle_stream(
@@ -26,14 +30,6 @@ pub fn handle_stream(
 	key: &str,
 	cond_pair: &Arc<(Mutex<Refresh>, Condvar)>,
 ) {
-	enum State {
-		None,
-		ReadOp(u8),
-		ReadingKeymask(u8, u8, Vec<u8>),
-		ReadingPayload(u8, u8, Vec<u8>, Vec<u8>),
-		PayloadRead(u8, Vec<u8>),
-	}
-
 	let mut m = sha1::Sha1::new();
 	m.update(key.as_bytes());
 	m.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
@@ -45,7 +41,7 @@ pub fn handle_stream(
 		"Failed changing WebSocket TCP connection to nonblocking mode.",
 	);
 
-	let mut read_state = State::None;
+	let mut read_state = ReadState::None;
 
 	let (mutex, cvar) = &**cond_pair;
 	loop {
@@ -64,114 +60,10 @@ pub fn handle_stream(
 			.unwrap_or_else(|e| panic!("Failed waiting: {}", e));
 
 		if result.timed_out() {
-			let mut buf = [0_u8; 64 * 1024];
-			let read_size =
-				stream.read(&mut buf).unwrap_or_else(|e| match e.kind() {
-					ErrorKind::WouldBlock => 0,
-					_ => panic!("Failed reading: {}", e),
-				});
+			read_state = read_stream(&mut stream, read_state);
 
-			let mut buf_offset = 0_usize;
-			loop {
-				if buf_offset >= read_size {
-					// Allow an additional match below even though we might have
-					// reached the end of the buffer.
-					if let State::PayloadRead(..) = read_state {
-					} else {
-						break;
-					}
-				}
-
-				read_state = match read_state {
-					State::None => {
-						let op_byte = buf[buf_offset];
-						if op_byte & FINAL_FRAGMENT == 0 {
-							panic!("Multi-fragment frames are not supported. Offset: {}, buffer: {:?}", buf_offset, &buf[buf_offset..usize::min(buf_offset + 128, buf.len())]);
-						}
-						buf_offset += 1;
-						let op = op_byte & 0b0000_1111;
-						State::ReadOp(op)
-					}
-					State::ReadOp(op) => {
-						if buf[buf_offset] & MASK_BIT == 0 {
-							panic!(
-								"Client is always supposed to set mask bit."
-							);
-						}
-						let payload_len = buf[buf_offset] & !MASK_BIT;
-						if payload_len > 125 {
-							panic!("Server only expects control frames, which per RFC 6455 only have payloads of 125 bytes or less.");
-						}
-						buf_offset += 1;
-						State::ReadingKeymask(op, payload_len, Vec::new())
-					}
-					State::ReadingKeymask(op, payload_len, mut keymask) => {
-						let keymask_end =
-							buf_offset + (MASKING_KEY_SIZE - keymask.len());
-						if keymask_end > read_size {
-							keymask.extend_from_slice(&buf[buf_offset..]);
-							buf_offset = read_size;
-							State::ReadingKeymask(op, payload_len, keymask)
-						} else {
-							keymask.extend_from_slice(
-								&buf[buf_offset..keymask_end],
-							);
-							buf_offset = keymask_end;
-							if payload_len > 0 {
-								State::ReadingPayload(
-									op,
-									payload_len,
-									keymask,
-									Vec::new(),
-								)
-							} else {
-								State::PayloadRead(op, Vec::new())
-							}
-						}
-					}
-					State::ReadingPayload(
-						op,
-						payload_len,
-						keymask,
-						mut incoming_payload,
-					) => {
-						let remaining_payload =
-							usize::from(incoming_payload[1] & !MASK_BIT)
-								- incoming_payload.len();
-						let payload_end = buf_offset + remaining_payload;
-
-						if payload_end > read_size {
-							incoming_payload
-								.extend_from_slice(&buf[buf_offset..]);
-							buf_offset = read_size;
-							State::ReadingPayload(
-								op,
-								payload_len,
-								keymask,
-								incoming_payload,
-							)
-						} else {
-							incoming_payload.extend_from_slice(
-								&buf[buf_offset..payload_end],
-							);
-
-							for i in 0..incoming_payload.len() {
-								incoming_payload[i] ^=
-									keymask[i % MASKING_KEY_SIZE];
-							}
-
-							buf_offset = payload_end;
-							State::PayloadRead(op, incoming_payload)
-						}
-					}
-					State::PayloadRead(op, payload) => {
-						match handle_websocket_frame(&mut stream, op, &payload)
-						{
-							FrameResult::Close => return,
-							FrameResult::Continue => State::None,
-						}
-					}
-				}
+			if let ReadState::Close = read_state {
+				return;
 			}
 		} else {
 			let changed_file = if let Some(path) = &guard.file {
@@ -196,11 +88,117 @@ pub fn handle_stream(
 	}
 }
 
-fn handle_websocket_frame(
+fn read_stream(
+	mut stream: &mut TcpStream,
+	mut read_state: ReadState,
+) -> ReadState {
+	let mut buf = [0_u8; 64 * 1024];
+	let read_size = stream.read(&mut buf).unwrap_or_else(|e| match e.kind() {
+		ErrorKind::WouldBlock => 0,
+		_ => panic!("Failed reading: {}", e),
+	});
+
+	let mut buf_offset = 0_usize;
+	loop {
+		if buf_offset >= read_size {
+			// Allow an additional match below even though we might have
+			// reached the end of the buffer.
+			if let ReadState::PayloadRead(..) = read_state {
+			} else {
+				break;
+			}
+		}
+
+		read_state = match read_state {
+			ReadState::None => {
+				let op_byte = buf[buf_offset];
+				if op_byte & FINAL_FRAGMENT == 0 {
+					panic!("Multi-fragment frames are not supported. Offset: {}, buffer: {:?}", buf_offset, &buf[buf_offset..usize::min(buf_offset + 128, buf.len())]);
+				}
+				buf_offset += 1;
+				let op = op_byte & 0b0000_1111;
+				ReadState::ReadOp(op)
+			}
+			ReadState::ReadOp(op) => {
+				if buf[buf_offset] & MASK_BIT == 0 {
+					panic!("Client is always supposed to set mask bit.");
+				}
+				let payload_len = buf[buf_offset] & !MASK_BIT;
+				if payload_len > 125 {
+					panic!("Server only expects control frames, which per RFC 6455 only have payloads of 125 bytes or less.");
+				}
+				buf_offset += 1;
+				ReadState::ReadingKeymask(op, payload_len, Vec::new())
+			}
+			ReadState::ReadingKeymask(op, payload_len, mut keymask) => {
+				let keymask_end =
+					buf_offset + (MASKING_KEY_SIZE - keymask.len());
+				if keymask_end > read_size {
+					keymask.extend_from_slice(&buf[buf_offset..]);
+					buf_offset = read_size;
+					ReadState::ReadingKeymask(op, payload_len, keymask)
+				} else {
+					keymask.extend_from_slice(&buf[buf_offset..keymask_end]);
+					buf_offset = keymask_end;
+					if payload_len > 0 {
+						ReadState::ReadingPayload(
+							op,
+							payload_len,
+							keymask,
+							Vec::new(),
+						)
+					} else {
+						ReadState::PayloadRead(op, Vec::new())
+					}
+				}
+			}
+			ReadState::ReadingPayload(
+				op,
+				payload_len,
+				keymask,
+				mut incoming_payload,
+			) => {
+				let remaining_payload =
+					usize::from(incoming_payload[1] & !MASK_BIT)
+						- incoming_payload.len();
+				let payload_end = buf_offset + remaining_payload;
+
+				if payload_end > read_size {
+					incoming_payload.extend_from_slice(&buf[buf_offset..]);
+					buf_offset = read_size;
+					ReadState::ReadingPayload(
+						op,
+						payload_len,
+						keymask,
+						incoming_payload,
+					)
+				} else {
+					incoming_payload
+						.extend_from_slice(&buf[buf_offset..payload_end]);
+
+					for i in 0..incoming_payload.len() {
+						incoming_payload[i] ^= keymask[i % MASKING_KEY_SIZE];
+					}
+
+					buf_offset = payload_end;
+					ReadState::PayloadRead(op, incoming_payload)
+				}
+			}
+			ReadState::PayloadRead(op, payload) => {
+				handle_frame(&mut stream, op, &payload)
+			}
+			ReadState::Close => break,
+		}
+	}
+
+	read_state
+}
+
+fn handle_frame(
 	mut stream: &mut TcpStream,
 	op: u8,
 	payload: &[u8],
-) -> FrameResult {
+) -> ReadState {
 	match op {
 		CLOSE_OPCODE => {
 			let (status_code, message): (Option<NonZeroU16>, String) =
@@ -232,7 +230,7 @@ fn handle_websocket_frame(
 			};
 			write(&return_frame, &mut stream);
 
-			FrameResult::Close
+			ReadState::Close
 		}
 		PING_OPCODE => {
 			println!(
@@ -248,12 +246,12 @@ fn handle_websocket_frame(
 			write(&header, &mut stream);
 			write(&payload, &mut stream);
 
-			FrameResult::Continue
+			ReadState::None
 		}
 		_ => {
 			println!("WARNING: Received frame with unhandled opcode: {:X}", op,);
 
-			FrameResult::Continue
+			ReadState::None
 		}
 	}
 }
