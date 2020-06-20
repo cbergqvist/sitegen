@@ -231,26 +231,41 @@ fn spawn_listening_thread(
 		});
 	println!("Listening for connections on {}:{}", host, port);
 
-	thread::spawn(move || {
-		for stream in listener.incoming() {
-			match stream {
-				Ok(stream) => {
-					let root_dir_clone = root_dir.clone();
-					let fs_cond_pair_clone = fs_cond.clone();
-					let start_file_clone = start_file.clone();
-					thread::spawn(move || {
-						handle_client(
-							stream,
-							&root_dir_clone,
-							&fs_cond_pair_clone,
-							start_file_clone,
-						)
-					});
+	let listener_builder =
+		thread::Builder::new().name("TCP_listener".to_string());
+	listener_builder
+		.spawn(move || {
+			for stream in listener.incoming() {
+				match stream {
+					Ok(stream) => {
+						let root_dir_clone = root_dir.clone();
+						let fs_cond_pair_clone = fs_cond.clone();
+						let start_file_clone = start_file.clone();
+						let stream_builder = thread::Builder::new()
+							.name("TCP_stream".to_string());
+						stream_builder
+							.spawn(move || {
+								handle_client(
+									stream,
+									&root_dir_clone,
+									&fs_cond_pair_clone,
+									start_file_clone,
+								)
+							})
+							.unwrap_or_else(|e| {
+								panic!(
+									"Failed spawning TCP stream thread: {}",
+									e
+								)
+							});
+					}
+					Err(e) => println!("WARNING: Unable to connect: {}", e),
 				}
-				Err(e) => println!("WARNING: Unable to connect: {}", e),
 			}
-		}
-	})
+		})
+		.unwrap_or_else(|e| {
+			panic!("Failed spawning TCP listening thread: {}", e)
+		})
 }
 
 fn watch_fs(
@@ -285,6 +300,10 @@ fn watch_fs(
 							html_extension,
 							input_dir,
 							output_dir,
+						);
+						println!(
+							"Path to communicate: {:?}",
+							path_to_communicate
 						);
 						if path_to_communicate.is_some() {
 							let (mutex, cvar) = &**fs_cond;
@@ -1060,9 +1079,9 @@ fn handle_read(stream: &mut TcpStream) -> Option<ReadResult> {
 			if size == buf.len() {
 				panic!("Request sizes as large as {} are not supported.", size)
 			} else if size == 0 {
-				// Saw this occur once before adding the code path to avoid
-				// panic! further down. Not sure about the cause of it.
-				println!("WARNING: Invalid request? {:?}", &buf[0..=32]);
+				// Seen this occur a few times with zero-filled buf.
+				// Not sure about the cause of it.
+				println!("Zero-size TCP stream read()-result. Ignoring.");
 				return None;
 			}
 
@@ -1227,14 +1246,13 @@ fn handle_websocket(
 	cond_pair: &Arc<(Mutex<Refresh>, Condvar)>,
 ) {
 	// Based on WebSocket RFC - https://tools.ietf.org/html/rfc6455
-	const FINAL_FRAME: u8 = 0b1000_0000;
+	const FINAL_FRAGMENT: u8 = 0b1000_0000;
 	const BINARY_MESSAGE_OPCODE: u8 = 0b0000_0010;
 	const CLOSE_OPCODE: u8 = 0b0000_1000;
 	const PING_OPCODE: u8 = 0b0000_1001;
 	const PONG_OPCODE: u8 = 0b0000_1010;
-	const ZERO_LENGTH: u8 = 0;
-	const CLOSE_FRAME: [u8; 2] = [FINAL_FRAME | CLOSE_OPCODE, ZERO_LENGTH];
 	const MASK_BIT: u8 = 0b1000_0000;
+	const MASKING_KEY_SIZE: usize = 4;
 
 	let mut m = sha1::Sha1::new();
 	m.update(key.as_bytes());
@@ -1264,74 +1282,112 @@ fn handle_websocket(
 			.unwrap_or_else(|e| panic!("Failed waiting: {}", e));
 
 		if result.timed_out() {
-			// TODO: Code doesn't handle multiple packets coming at once.
-			//
-			// Previously received ping packet with extra data:
-			//     [137, 132, 6, 124, 143, 87, 86, 53, 193, 16]
-
-			let mut buf = [0_u8; 128];
-			let size =
+			// TODO: Doesn't handle frames being split at the end of `buf`.
+			let mut buf = [0_u8; 64 * 1024];
+			let read_size =
 				stream.read(&mut buf).unwrap_or_else(|e| match e.kind() {
 					ErrorKind::WouldBlock => 0,
 					_ => panic!("Failed reading: {}", e),
 				});
-			if size > 0 {
-				if size < 2 {
-					panic!("Invalid frame.");
+
+			let mut remaining_size = read_size;
+			let mut frame_offset = 0_usize;
+			while remaining_size > 0 {
+				if remaining_size < 2 {
+					panic!("Invalid frame of {} bytes. Code doesn't handle partial frames.", remaining_size);
 				}
-				if buf[0] & FINAL_FRAME == 0 {
-					panic!("Multi-frame communication is not supported yet.");
+				if buf[frame_offset] & FINAL_FRAGMENT == 0 {
+					panic!("Multi-fragment frames are not supported yet. Offset: {}, buffer: {:?}", frame_offset, &buf[0..1024]);
 				}
-				if buf[1] & MASK_BIT == 0 {
+				if buf[frame_offset + 1] & MASK_BIT == 0 {
 					panic!("Client is always supposed to set mask bit.");
 				}
+				let payload_len = (buf[frame_offset + 1] & !MASK_BIT) as usize;
+				if payload_len > 125 {
+					panic!("Server only expects control frames, which per RFC 6455 only have payloads of 125 bytes or less.");
+				}
+				if payload_len > remaining_size - 2 - MASKING_KEY_SIZE {
+					panic!("Whoops, remaining buffer is too small for a payload of length: {}, detected unsupported package split.", payload_len);
+				}
 
-				match buf[0] & 0b0000_1111 {
+				let frame = &buf[frame_offset
+					..(frame_offset + 2 + MASKING_KEY_SIZE + payload_len)];
+				let masking_key = &frame[2..2 + MASKING_KEY_SIZE];
+				let mut payload = Vec::with_capacity(payload_len);
+				for i in 0..payload_len {
+					let value = frame[2 + MASKING_KEY_SIZE + i]
+						^ masking_key[i % MASKING_KEY_SIZE];
+					payload.push(value);
+				}
+
+				match frame[0] & 0b0000_1111 {
 					CLOSE_OPCODE => {
+						let (status_code, message): (Option<u16>, String) =
+							if payload_len > 1 {
+								(
+									Some(
+										(payload[0] as u16) << 8
+											| payload[1] as u16,
+									),
+									String::from_utf8_lossy(&payload[2..])
+										.to_string(),
+								)
+							} else {
+								(None, String::from(""))
+							};
 						println!(
-							"Received WebSocket connection close, responding in kind."
+							"Received WebSocket connection close, responding in kind. Payload size: {}, Status code: {:?}, message: {}", payload_len, status_code, message
 						);
-						write(&CLOSE_FRAME, &mut stream);
+
+						let mut return_frame = Vec::with_capacity(4);
+						return_frame.push(FINAL_FRAGMENT | CLOSE_OPCODE);
+						if status_code.is_some() {
+							return_frame.push(2);
+							return_frame.extend_from_slice(&payload[0..2]);
+						} else {
+							return_frame.push(0);
+						};
+						write(&return_frame, &mut stream);
 						return;
 					}
 					PING_OPCODE => {
-						println!("Got ping message!");
-						let message_len = buf[1] & !MASK_BIT;
-						if message_len as usize > buf.len() - 2 {
-							panic!("Woops, our buffer is too small for a message of length: {}", message_len);
-						}
-						let frame = [FINAL_FRAME | PONG_OPCODE, message_len];
-						write(&frame, &mut stream);
-						write(
-							&buf[2usize..(message_len + 2) as usize],
-							&mut stream,
+						println!(
+							"Got PING message with payload size: {}, responding with PONG, payload: {:?}",
+							payload_len, payload
 						);
+						let header =
+							[FINAL_FRAGMENT | PONG_OPCODE, payload_len as u8];
+						write(&header, &mut stream);
+						write(&payload, &mut stream);
 					}
 					_ => {
 						println!(
-							"WARNING: Received packet with unhandled opcode: {:?} ({} bytes)",
-							&buf[0..size],
-							size
+							"WARNING: Received frame with unhandled opcode: {:?}",
+							&frame,
 						);
 					}
 				}
+				frame_offset += 2 + MASKING_KEY_SIZE + payload_len;
+				remaining_size = read_size - frame_offset;
 			}
 		} else {
-			// Not a time-out? Then we got a proper file change notification!
-			// Time to notify the browser.
 			let message = if let Some(path) = &guard.file {
 				String::from(path.to_string_lossy())
 			} else {
 				String::from("")
 			};
-			let length = message.len();
-			if length > 125 {
+			println!("Received file change notification ({}), time to notify the browser.", message);
+
+			let payload_len = message.len();
+			if payload_len > 125 {
 				panic!("Don't support sending variable-length WebSocket frames yet.")
 			}
 
-			let frame =
-				[FINAL_FRAME | BINARY_MESSAGE_OPCODE, length.to_le_bytes()[0]];
-			write(&frame, &mut stream);
+			let header = [
+				FINAL_FRAGMENT | BINARY_MESSAGE_OPCODE,
+				payload_len.to_le_bytes()[0],
+			];
+			write(&header, &mut stream);
 			write(message.as_bytes(), &mut stream);
 		}
 	}
