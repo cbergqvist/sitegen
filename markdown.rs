@@ -245,6 +245,9 @@ fn compute_output_file_path(
 
 // Rolling a simple version of Liquid parsing on my own since the official Rust
 // one has too many dependencies.
+//
+// Allowing more lines to keep state machine cohesive.
+#[allow(clippy::too_many_lines)]
 fn write_html_page(
 	mut output_buf: &mut BufWriter<&mut Vec<u8>>,
 	front_matter: &FrontMatter,
@@ -413,8 +416,8 @@ fn write_html_page(
 						}
 					}
 				}
+				column_number += 1
 			}
-			column_number += 1
 		}
 	}
 }
