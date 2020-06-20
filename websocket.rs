@@ -16,16 +16,24 @@ const PONG_OPCODE: u8 = 0b0000_1010;
 const MASK_BIT: u8 = 0b1000_0000;
 const MASKING_KEY_SIZE: usize = 4;
 
-enum WebSocketFrameResult {
+enum FrameResult {
 	Close,
 	Continue,
 }
 
-pub fn handle_websocket(
+pub fn handle_stream(
 	mut stream: TcpStream,
 	key: &str,
 	cond_pair: &Arc<(Mutex<Refresh>, Condvar)>,
 ) {
+	enum State {
+		None,
+		ReadOp(u8),
+		ReadingKeymask(u8, u8, Vec<u8>),
+		ReadingPayload(u8, u8, Vec<u8>, Vec<u8>),
+		PayloadRead(u8, Vec<u8>),
+	}
+
 	let mut m = sha1::Sha1::new();
 	m.update(key.as_bytes());
 	m.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
@@ -37,13 +45,6 @@ pub fn handle_websocket(
 		"Failed changing WebSocket TCP connection to nonblocking mode.",
 	);
 
-	enum State {
-		None,
-		ReadOp(u8),
-		ReadingKeymask(u8, u8, Vec<u8>),
-		ReadingPayload(u8, u8, Vec<u8>, Vec<u8>),
-		PayloadRead(u8, Vec<u8>),
-	}
 	let mut read_state = State::None;
 
 	let (mutex, cvar) = &**cond_pair;
@@ -155,8 +156,8 @@ pub fn handle_websocket(
 							);
 
 							for i in 0..incoming_payload.len() {
-								incoming_payload[i] = incoming_payload[i]
-									^ keymask[i % MASKING_KEY_SIZE];
+								incoming_payload[i] ^=
+									keymask[i % MASKING_KEY_SIZE];
 							}
 
 							buf_offset = payload_end;
@@ -164,9 +165,10 @@ pub fn handle_websocket(
 						}
 					}
 					State::PayloadRead(op, payload) => {
-						match handle_websocket_frame(&mut stream, op, payload) {
-							WebSocketFrameResult::Close => return,
-							WebSocketFrameResult::Continue => State::None,
+						match handle_websocket_frame(&mut stream, op, &payload)
+						{
+							FrameResult::Close => return,
+							FrameResult::Continue => State::None,
 						}
 					}
 				}
@@ -197,8 +199,8 @@ pub fn handle_websocket(
 fn handle_websocket_frame(
 	mut stream: &mut TcpStream,
 	op: u8,
-	payload: Vec<u8>,
-) -> WebSocketFrameResult {
+	payload: &[u8],
+) -> FrameResult {
 	match op {
 		CLOSE_OPCODE => {
 			let (status_code, message): (Option<NonZeroU16>, String) =
@@ -230,7 +232,7 @@ fn handle_websocket_frame(
 			};
 			write(&return_frame, &mut stream);
 
-			WebSocketFrameResult::Close
+			FrameResult::Close
 		}
 		PING_OPCODE => {
 			println!(
@@ -246,12 +248,12 @@ fn handle_websocket_frame(
 			write(&header, &mut stream);
 			write(&payload, &mut stream);
 
-			WebSocketFrameResult::Continue
+			FrameResult::Continue
 		}
 		_ => {
 			println!("WARNING: Received frame with unhandled opcode: {:X}", op,);
 
-			WebSocketFrameResult::Continue
+			FrameResult::Continue
 		}
 	}
 }
