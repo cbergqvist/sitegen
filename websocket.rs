@@ -159,8 +159,7 @@ fn read_stream(
 				mut incoming_payload,
 			) => {
 				let remaining_payload =
-					usize::from(incoming_payload[1] & !MASK_BIT)
-						- incoming_payload.len();
+					usize::from(payload_len) - incoming_payload.len();
 				let payload_end = buf_offset + remaining_payload;
 
 				if payload_end > read_size {
