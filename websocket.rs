@@ -18,10 +18,24 @@ const MASKING_KEY_SIZE: usize = 4;
 
 enum ReadState {
 	None,
-	ReadOp(u8),
-	ReadingKeymask(u8, u8, Vec<u8>),
-	ReadingPayload(u8, u8, Vec<u8>, Vec<u8>),
-	PayloadRead(u8, Vec<u8>),
+	ReadOp {
+		op: u8,
+	},
+	ReadingKeymask {
+		op: u8,
+		payload_len: u8,
+		keymask: Vec<u8>,
+	},
+	ReadingPayload {
+		op: u8,
+		payload_len: u8,
+		keymask: Vec<u8>,
+		incoming_payload: Vec<u8>,
+	},
+	PayloadRead {
+		op: u8,
+		payload: Vec<u8>,
+	},
 	Close,
 }
 
@@ -103,7 +117,7 @@ fn read_stream(
 		if buf_offset >= read_size {
 			// Allow an additional match below even though we might have
 			// reached the end of the buffer.
-			if let ReadState::PayloadRead(..) = read_state {
+			if let ReadState::PayloadRead { .. } = read_state {
 			} else {
 				break;
 			}
@@ -117,9 +131,9 @@ fn read_stream(
 				}
 				buf_offset += 1;
 				let op = op_byte & 0b0000_1111;
-				ReadState::ReadOp(op)
+				ReadState::ReadOp { op }
 			}
-			ReadState::ReadOp(op) => {
+			ReadState::ReadOp { op } => {
 				if buf[buf_offset] & MASK_BIT == 0 {
 					panic!("Client is always supposed to set mask bit.");
 				}
@@ -128,49 +142,62 @@ fn read_stream(
 					panic!("Server only expects control frames, which per RFC 6455 only have payloads of 125 bytes or less.");
 				}
 				buf_offset += 1;
-				ReadState::ReadingKeymask(op, payload_len, Vec::new())
+				ReadState::ReadingKeymask {
+					op,
+					payload_len,
+					keymask: Vec::new(),
+				}
 			}
-			ReadState::ReadingKeymask(op, payload_len, mut keymask) => {
+			ReadState::ReadingKeymask {
+				op,
+				payload_len,
+				mut keymask,
+			} => {
 				let keymask_end =
 					buf_offset + (MASKING_KEY_SIZE - keymask.len());
 				if keymask_end > read_size {
 					keymask.extend_from_slice(&buf[buf_offset..]);
 					buf_offset = read_size;
-					ReadState::ReadingKeymask(op, payload_len, keymask)
+					ReadState::ReadingKeymask {
+						op,
+						payload_len,
+						keymask,
+					}
 				} else {
 					keymask.extend_from_slice(&buf[buf_offset..keymask_end]);
 					buf_offset = keymask_end;
 					if payload_len > 0 {
-						ReadState::ReadingPayload(
+						ReadState::ReadingPayload {
 							op,
 							payload_len,
 							keymask,
-							Vec::new(),
-						)
+							incoming_payload: Vec::new(),
+						}
 					} else {
-						ReadState::PayloadRead(op, Vec::new())
+						ReadState::PayloadRead {
+							op,
+							payload: Vec::new(),
+						}
 					}
 				}
 			}
-			ReadState::ReadingPayload(
+			ReadState::ReadingPayload {
 				op,
 				payload_len,
 				keymask,
 				mut incoming_payload,
-			) => {
-				let remaining_payload =
-					usize::from(payload_len) - incoming_payload.len();
-				let payload_end = buf_offset + remaining_payload;
-
+			} => {
+				let payload_end = buf_offset
+					+ (usize::from(payload_len) - incoming_payload.len());
 				if payload_end > read_size {
 					incoming_payload.extend_from_slice(&buf[buf_offset..]);
 					buf_offset = read_size;
-					ReadState::ReadingPayload(
+					ReadState::ReadingPayload {
 						op,
 						payload_len,
 						keymask,
 						incoming_payload,
-					)
+					}
 				} else {
 					incoming_payload
 						.extend_from_slice(&buf[buf_offset..payload_end]);
@@ -180,10 +207,13 @@ fn read_stream(
 					}
 
 					buf_offset = payload_end;
-					ReadState::PayloadRead(op, incoming_payload)
+					ReadState::PayloadRead {
+						op,
+						payload: incoming_payload,
+					}
 				}
 			}
-			ReadState::PayloadRead(op, payload) => {
+			ReadState::PayloadRead { op, payload } => {
 				handle_frame(&mut stream, op, &payload)
 			}
 			ReadState::Close => break,
