@@ -273,7 +273,7 @@ fn handle_frame(
 				}),
 			];
 			write(&header, &mut stream);
-			write(&payload, &mut stream);
+			write(payload, &mut stream);
 
 			ReadState::None
 		}

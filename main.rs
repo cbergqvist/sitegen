@@ -151,7 +151,7 @@ fn inner_main(
 
 	let mut output_files = Vec::new();
 
-	let markdown_files = markdown::get_files(&input_dir, markdown_extension);
+	let markdown_files = markdown::get_files(input_dir, markdown_extension);
 
 	if markdown_files.is_empty() {
 		println!(
@@ -164,11 +164,8 @@ fn inner_main(
 		});
 
 		for file_name in &markdown_files {
-			output_files.push(markdown::process_file(
-				&file_name,
-				&input_dir,
-				&output_dir,
-			))
+			output_files
+				.push(markdown::process_file(file_name, input_dir, output_dir))
 		}
 	}
 
@@ -193,7 +190,7 @@ fn inner_main(
 
 	// As we start watching some time after we've done initial processing, it is
 	// possible that files get modified in between and changes get lost.
-	watch_fs(&input_dir, &output_dir, markdown_extension, &fs_cond_clone);
+	watch_fs(input_dir, output_dir, markdown_extension, &fs_cond_clone);
 
 	// We never really get here as we loop infinitely until Ctrl+C.
 	listening_thread
@@ -334,7 +331,7 @@ fn get_path_to_refresh(
 			}
 		}
 
-		return Some(markdown::process_file(&path, &input_dir, &output_dir));
+		return Some(markdown::process_file(&path, input_dir, output_dir));
 	} else if path.extension() == Some(html_extension) {
 		let parent_path = path.parent().unwrap_or_else(|| {
 			panic!("Path without a parent directory?: {}", path.display())
@@ -363,17 +360,15 @@ fn get_path_to_refresh(
 				if templated_file.exists() {
 					return Some(markdown::process_file(
 						&templated_file,
-						&input_dir,
-						&output_dir,
+						input_dir,
+						output_dir,
 					));
 				}
 			} else {
 				let mut output_files = Vec::new();
 				for file_name in &markdown_files {
 					output_files.push(markdown::process_file(
-						&file_name,
-						&input_dir,
-						&output_dir,
+						file_name, input_dir, output_dir,
 					))
 				}
 				return output_files.first().cloned();
@@ -381,9 +376,9 @@ fn get_path_to_refresh(
 		} else if parent_path_file_name == "_includes" {
 			// Since we don't track what includes what, just do a full refresh.
 			let markdown_files =
-				markdown::get_files(&input_dir, markdown_extension);
+				markdown::get_files(input_dir, markdown_extension);
 			for file_name in &markdown_files {
-				markdown::process_file(&file_name, &input_dir, &output_dir);
+				markdown::process_file(file_name, input_dir, output_dir);
 			}
 			// Special identifier making JavaScript reload the current page.
 			return Some(PathBuf::from("*"));
@@ -638,7 +633,7 @@ fn handle_client(
 				handle_write(stream, &path, root_dir, start_file)
 			}
 			ReadResult::WebSocket(key) => {
-				websocket::handle_stream(stream, &key, &fs_cond)
+				websocket::handle_stream(stream, &key, fs_cond)
 			}
 		}
 	}

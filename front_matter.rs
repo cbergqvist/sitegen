@@ -97,12 +97,7 @@ pub fn parse(
 	if let yaml_rust::Yaml::Hash(hash) = &yaml[0] {
 		for mapping in hash {
 			if let yaml_rust::Yaml::String(s) = mapping.0 {
-				parse_yaml_attribute(
-					&mut result,
-					&s,
-					&mapping.1,
-					input_file_path,
-				)
+				parse_yaml_attribute(&mut result, s, mapping.1, input_file_path)
 			} else {
 				panic!("Expected string keys in YAML element in front matter of \"{}\" but got {:?}.", 
 						input_file_path.display(), &mapping.0)

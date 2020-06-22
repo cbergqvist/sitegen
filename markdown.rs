@@ -94,8 +94,7 @@ pub fn process_file(
 
 	let mut reader = BufReader::new(input_file);
 
-	let front_matter =
-		super::front_matter::parse(&input_file_path, &mut reader);
+	let front_matter = super::front_matter::parse(input_file_path, &mut reader);
 	let mut markdown_content = String::new();
 	let _size =
 		reader
@@ -117,7 +116,7 @@ pub fn process_file(
 		&mut output_buf,
 		&front_matter,
 		&mut parser,
-		&input_file_path,
+		input_file_path,
 		&template_file_path,
 		root_input_dir,
 	);
@@ -151,7 +150,7 @@ pub fn process_file(
 			)
 		});
 	output_file
-		.write_all(&output_buf.buffer())
+		.write_all(output_buf.buffer())
 		.unwrap_or_else(|e| {
 			panic!(
 				"Failed writing to \"{}\": {}.",
@@ -308,7 +307,7 @@ fn write_html_page(
 					}
 					State::ValueObject => panic!("Unexpected newline while reading value object identifier at {}:{}:{}.", template_file_path.display(), line_number, column_number),
 					State::ValueField => {
-						output_template_value(&mut output_buf, &mut object, &mut field, &front_matter, &mut parser, markdown_file_path);
+						output_template_value(&mut output_buf, &mut object, &mut field, front_matter, &mut parser, markdown_file_path);
 						state = State::ValueEnd
 					}
 					State::WaitingForCloseBracket => panic!("Expected close bracket but got newline at {}:{}:{}.", template_file_path.display(), line_number, column_number),
@@ -359,7 +358,7 @@ fn write_html_page(
 							b'.' => panic!("Additional dot in template identifier at {}:{}:{}.", template_file_path.display(), line_number, column_number),
 							b'}' => state = State::WaitingForCloseBracket,
 							b' ' | b'\t' => {
-								output_template_value(&mut output_buf, &mut object, &mut field, &front_matter, &mut parser, markdown_file_path);
+								output_template_value(&mut output_buf, &mut object, &mut field, front_matter, &mut parser, markdown_file_path);
 								state = State::ValueEnd
 							}
 							_ => field.push(byte)
