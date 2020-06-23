@@ -22,12 +22,12 @@ pub struct FeedEntry {
 
 pub fn generate(
 	file_name: &PathBuf,
-	header: FeedHeader,
+	header: &FeedHeader,
 	entries: Vec<FeedEntry>,
 	output_dir: &PathBuf,
 ) {
-	fn complete_url(base_url: &String, path: &str) -> String {
-		let mut url = base_url.clone();
+	fn complete_url(base_url: &str, path: &str) -> String {
+		let mut url = base_url.to_string();
 		url.push_str(path);
 		url
 	}

@@ -65,7 +65,26 @@ enum ReadResult {
 }
 
 fn main() {
-	// Not using the otherwise brilliant CLAP crate since I detest string matching args to get their values.
+	// Not using the otherwise brilliant CLAP crate since I detest string
+	// matching args to get their values.
+	let mut author_arg = StringArg {
+		name: "author",
+		help: "Set the name of the author.",
+		value: String::from("John Doe"),
+		set: false,
+	};
+	let mut base_url_arg = StringArg {
+		name: "base_url",
+		help: "Set base URL to be used in output files, default is \"http://test.com/\".",
+		value: String::from("http://test.com/"),
+		set: false,
+	};
+	let mut email_arg = StringArg {
+		name: "email",
+		help: "Set email of the author.",
+		value: String::from("john.doe@test.com"),
+		set: false,
+	};
 	let mut help_arg = BoolArg {
 		name: "help",
 		help: "Print this text.",
@@ -104,7 +123,14 @@ fn main() {
 	parse_args(
 		&mut vec![&mut help_arg, &mut watch_arg],
 		&mut vec![&mut port_arg],
-		&mut vec![&mut host_arg, &mut input_arg, &mut output_arg],
+		&mut vec![
+			&mut author_arg,
+			&mut base_url_arg,
+			&mut email_arg,
+			&mut host_arg,
+			&mut input_arg,
+			&mut output_arg,
+		],
 	);
 
 	if help_arg.value {
@@ -116,6 +142,9 @@ Basic static site generator.
 
 Arguments:"
 		);
+		println!("{}", author_arg);
+		println!("{}", base_url_arg);
+		println!("{}", email_arg);
 		println!("{}", help_arg);
 		println!("{}", host_arg);
 		println!("{}", input_arg);
@@ -139,6 +168,9 @@ Arguments:"
 		&host_arg.value,
 		port_arg.value,
 		watch_arg.value,
+		&author_arg.value,
+		&email_arg.value,
+		&base_url_arg.value,
 	)
 }
 
@@ -148,6 +180,9 @@ fn inner_main(
 	host: &str,
 	port: i16,
 	watch: bool,
+	author: &str,
+	email: &str,
+	base_url: &str,
 ) {
 	let markdown_extension = OsStr::new("md");
 
@@ -185,12 +220,12 @@ fn inner_main(
 			feed_name.set_extension("xml");
 			let header = atom::FeedHeader {
 				title: group,
-				base_url: "http://test.com/".to_string(),
+				base_url: base_url.to_string(),
 				latest_update: "2001-01-19T20:10:00Z".to_string(),
-				author_name: "John Doe".to_string(),
-				author_email: "no@way.com".to_string(),
+				author_name: author.to_string(),
+				author_email: email.to_string(),
 			};
-			atom::generate(&feed_name, header, entries, output_dir);
+			atom::generate(&feed_name, &header, entries, output_dir);
 		}
 	}
 
