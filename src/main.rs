@@ -64,76 +64,191 @@ enum ReadResult {
 	WebSocket(String),
 }
 
+// Not using the otherwise brilliant CLAP crate since I detest string matching
+// args to get their values.
+struct ConfigArgs {
+	author: StringArg,
+	base_url: StringArg,
+	email: StringArg,
+	help: BoolArg,
+	host: StringArg,
+	input: StringArg,
+	output: StringArg,
+	port: I16Arg,
+	watch: BoolArg,
+}
+
+struct Config {
+	author: String,
+	base_url: String,
+	email: String,
+	host: String,
+	input_dir: PathBuf,
+	output_dir: PathBuf,
+	port: i16,
+	watch: bool,
+}
+
+impl ConfigArgs {
+	fn new() -> Self {
+		ConfigArgs {
+			author: StringArg {
+				name: "author",
+				help: "Set the name of the author.",
+				value: String::from("John Doe"),
+				set: false,
+			},
+			base_url: StringArg {
+				name: "base_url",
+				help: "Set base URL to be used in output files, default is \"http://test.com/\".",
+				value: String::from("http://test.com/"),
+				set: false,
+			},
+			email: StringArg {
+				name: "email",
+				help: "Set email of the author.",
+				value: String::from("john.doe@test.com"),
+				set: false,
+			},
+			help: BoolArg {
+				name: "help",
+				help: "Print this text.",
+				value: false,
+			},
+			host: StringArg {
+				name: "host",
+				help: "Set address to bind to. The default 127.0.0.1 can be used for privacy and 0.0.0.0 to give access to other machines.",
+				value: String::from("127.0.0.1"),
+				set: false,
+			},
+			input: StringArg {
+				name: "input",
+				help: "Set input directory to process.",
+				value: String::from("./input"),
+				set: false,
+			},
+			output: StringArg {
+				name: "output",
+				help: "Set output directory to write to.",
+				value: String::from("./output"),
+				set: false,
+			},
+			port: I16Arg {
+				name: "port",
+				help: "Set port to bind to.",
+				value: 8090,
+				set: false,
+			},
+			watch: BoolArg {
+				name: "watch",
+				help: "Run indefinitely, watching input directory for changes.",
+				value: false,
+			},
+		}
+	}
+
+	fn parse(&mut self, args: std::env::Args) {
+		let mut bool_args = vec![&mut self.help, &mut self.watch];
+		let mut i16_args = vec![&mut self.port];
+		let mut string_args = vec![
+			&mut self.author,
+			&mut self.base_url,
+			&mut self.email,
+			&mut self.host,
+			&mut self.input,
+			&mut self.output,
+		];
+
+		let mut first_arg = true;
+		let mut previous_arg = None;
+		'arg_loop: for mut arg in args {
+			// Skip executable arg itself.
+			if first_arg {
+				first_arg = false;
+				continue;
+			}
+
+			if let Some(prev) = previous_arg {
+				for string_arg in &mut *string_args {
+					if prev == string_arg.name {
+						string_arg.value = arg;
+						string_arg.set = true;
+						previous_arg = None;
+						continue 'arg_loop;
+					}
+				}
+
+				for i16_arg in &mut *i16_args {
+					if prev == i16_arg.name {
+						i16_arg.value =
+							arg.parse::<i16>().unwrap_or_else(|e| {
+								panic!(
+									"Invalid value for {}: {}",
+									i16_arg.name, e
+								);
+							});
+						i16_arg.set = true;
+						previous_arg = None;
+						continue 'arg_loop;
+					}
+				}
+
+				panic!("Unhandled key-value arg: {}", prev);
+			}
+
+			if arg.len() < 3
+				|| arg.as_bytes()[0] != b'-'
+				|| arg.as_bytes()[1] != b'-'
+			{
+				panic!("Unexpected argument: {}", arg)
+			}
+
+			arg = arg.split_off(2);
+
+			for bool_arg in &mut *bool_args {
+				if arg == bool_arg.name {
+					bool_arg.value = true;
+					continue 'arg_loop;
+				}
+			}
+
+			for i16_arg in &*i16_args {
+				if arg == i16_arg.name {
+					previous_arg = Some(arg);
+					continue 'arg_loop;
+				}
+			}
+
+			for string_arg in &*string_args {
+				if arg == string_arg.name {
+					previous_arg = Some(arg);
+					continue 'arg_loop;
+				}
+			}
+
+			panic!("Unsupported argument: {}", arg)
+		}
+	}
+
+	fn values(self) -> Config {
+		Config {
+			author: self.author.value,
+			base_url: self.base_url.value,
+			email: self.email.value,
+			host: self.host.value,
+			input_dir: PathBuf::from(self.input.value),
+			output_dir: PathBuf::from(self.output.value),
+			port: self.port.value,
+			watch: self.watch.value,
+		}
+	}
+}
+
 fn main() {
-	// Not using the otherwise brilliant CLAP crate since I detest string
-	// matching args to get their values.
-	let mut author_arg = StringArg {
-		name: "author",
-		help: "Set the name of the author.",
-		value: String::from("John Doe"),
-		set: false,
-	};
-	let mut base_url_arg = StringArg {
-		name: "base_url",
-		help: "Set base URL to be used in output files, default is \"http://test.com/\".",
-		value: String::from("http://test.com/"),
-		set: false,
-	};
-	let mut email_arg = StringArg {
-		name: "email",
-		help: "Set email of the author.",
-		value: String::from("john.doe@test.com"),
-		set: false,
-	};
-	let mut help_arg = BoolArg {
-		name: "help",
-		help: "Print this text.",
-		value: false,
-	};
-	let mut host_arg = StringArg {
-		name: "host",
-		help: "Set address to bind to. The default 127.0.0.1 can be used for privacy and 0.0.0.0 to give access to other machines.",
-		value: String::from("127.0.0.1"),
-		set: false,
-	};
-	let mut input_arg = StringArg {
-		name: "input",
-		help: "Set input directory to process.",
-		value: String::from("./input"),
-		set: false,
-	};
-	let mut output_arg = StringArg {
-		name: "output",
-		help: "Set output directory to write to.",
-		value: String::from("./output"),
-		set: false,
-	};
-	let mut port_arg = I16Arg {
-		name: "port",
-		help: "Set port to bind to.",
-		value: 8090,
-		set: false,
-	};
-	let mut watch_arg = BoolArg {
-		name: "watch",
-		help: "Run indefinitely, watching input directory for changes.",
-		value: false,
-	};
+	let mut args = ConfigArgs::new();
+	args.parse(env::args());
 
-	parse_args(
-		&mut vec![&mut help_arg, &mut watch_arg],
-		&mut vec![&mut port_arg],
-		&mut vec![
-			&mut author_arg,
-			&mut base_url_arg,
-			&mut email_arg,
-			&mut host_arg,
-			&mut input_arg,
-			&mut output_arg,
-		],
-	);
-
-	if help_arg.value {
+	if args.help.value {
 		println!(
 			"SiteGen version 0.1
 Christopher Bergqvist <chris@digitalpoetry.se>
@@ -142,68 +257,58 @@ Basic static site generator.
 
 Arguments:"
 		);
-		println!("{}", author_arg);
-		println!("{}", base_url_arg);
-		println!("{}", email_arg);
-		println!("{}", help_arg);
-		println!("{}", host_arg);
-		println!("{}", input_arg);
-		println!("{}", output_arg);
-		println!("{}", port_arg);
-		println!("{}", watch_arg);
+		println!("{}", args.author);
+		println!("{}", args.base_url);
+		println!("{}", args.email);
+		println!("{}", args.help);
+		println!("{}", args.host);
+		println!("{}", args.input);
+		println!("{}", args.output);
+		println!("{}", args.port);
+		println!("{}", args.watch);
 
 		return;
 	}
 
-	if !watch_arg.value && (host_arg.set || port_arg.set) {
+	if !args.watch.value && (args.host.set || args.port.set) {
 		println!(
 			"WARNING: {} or {} arg set without {} arg, so they have no use.",
-			host_arg.name, port_arg.name, watch_arg.name
+			args.host.name, args.port.name, args.watch.name
 		)
 	}
 
-	inner_main(
-		&PathBuf::from(input_arg.value),
-		&PathBuf::from(output_arg.value),
-		&host_arg.value,
-		port_arg.value,
-		watch_arg.value,
-		&author_arg.value,
-		&email_arg.value,
-		&base_url_arg.value,
-	)
+	inner_main(&args.values())
 }
 
-fn inner_main(
-	input_dir: &PathBuf,
-	output_dir: &PathBuf,
-	host: &str,
-	port: i16,
-	watch: bool,
-	author: &str,
-	email: &str,
-	base_url: &str,
-) {
+fn inner_main(config: &Config) {
 	let markdown_extension = OsStr::new("md");
 
 	let mut output_files = Vec::new();
 
-	let markdown_files = markdown::get_files(input_dir, markdown_extension);
+	let markdown_files =
+		markdown::get_files(&config.input_dir, markdown_extension);
 
 	if markdown_files.is_empty() {
 		println!(
 			"Found no valid file entries under \"{}\".",
-			input_dir.display()
+			config.input_dir.display()
 		);
 	} else {
-		fs::create_dir(&output_dir).unwrap_or_else(|e| {
-			panic!("Failed creating \"{}\": {}.", output_dir.display(), e)
+		fs::create_dir(&config.output_dir).unwrap_or_else(|e| {
+			panic!(
+				"Failed creating \"{}\": {}.",
+				config.output_dir.display(),
+				e
+			)
 		});
 
 		let mut groups = HashMap::new();
 		for file_name in &markdown_files {
-			let generated =
-				markdown::process_file(file_name, input_dir, output_dir);
+			let generated = markdown::process_file(
+				file_name,
+				&config.input_dir,
+				&config.output_dir,
+			);
 			if let Some(group) = generated.group {
 				let entries = groups.entry(group).or_insert_with(Vec::new);
 				entries.push(atom::FeedEntry {
@@ -216,20 +321,20 @@ fn inner_main(
 		}
 
 		for (group, entries) in groups {
-			let mut feed_name = output_dir.join(PathBuf::from(&group));
+			let mut feed_name = config.output_dir.join(PathBuf::from(&group));
 			feed_name.set_extension("xml");
 			let header = atom::FeedHeader {
 				title: group,
-				base_url: base_url.to_string(),
+				base_url: config.base_url.to_string(),
 				latest_update: "2001-01-19T20:10:00Z".to_string(),
-				author_name: author.to_string(),
-				author_email: email.to_string(),
+				author_name: config.author.to_string(),
+				author_email: config.email.to_string(),
 			};
-			atom::generate(&feed_name, &header, entries, output_dir);
+			atom::generate(&feed_name, &header, entries, &config.output_dir);
 		}
 	}
 
-	if !watch {
+	if !config.watch {
 		return;
 	}
 
@@ -241,16 +346,26 @@ fn inner_main(
 		Condvar::new(),
 	));
 
-	let root_dir = PathBuf::from(&output_dir);
+	let root_dir = PathBuf::from(&config.output_dir);
 	let fs_cond_clone = fs_cond.clone();
 	let start_file = output_files.first().cloned();
 
-	let listening_thread =
-		spawn_listening_thread(host, port, root_dir, fs_cond, start_file);
+	let listening_thread = spawn_listening_thread(
+		&config.host,
+		config.port,
+		root_dir,
+		fs_cond,
+		start_file,
+	);
 
 	// As we start watching some time after we've done initial processing, it is
 	// possible that files get modified in between and changes get lost.
-	watch_fs(input_dir, output_dir, markdown_extension, &fs_cond_clone);
+	watch_fs(
+		&config.input_dir,
+		&config.output_dir,
+		markdown_extension,
+		&fs_cond_clone,
+	);
 
 	// We never really get here as we loop infinitely until Ctrl+C.
 	listening_thread
@@ -449,78 +564,6 @@ fn get_path_to_refresh(
 	}
 
 	None
-}
-
-fn parse_args(
-	bool_args: &mut Vec<&mut BoolArg>,
-	i16_args: &mut Vec<&mut I16Arg>,
-	string_args: &mut Vec<&mut StringArg>,
-) {
-	let mut first_arg = true;
-	let mut previous_arg = None;
-	'arg_loop: for mut arg in env::args() {
-		// Skip executable arg itself.
-		if first_arg {
-			first_arg = false;
-			continue;
-		}
-
-		if let Some(prev) = previous_arg {
-			for string_arg in &mut *string_args {
-				if prev == string_arg.name {
-					string_arg.value = arg;
-					string_arg.set = true;
-					previous_arg = None;
-					continue 'arg_loop;
-				}
-			}
-
-			for i16_arg in &mut *i16_args {
-				if prev == i16_arg.name {
-					i16_arg.value = arg.parse::<i16>().unwrap_or_else(|e| {
-						panic!("Invalid value for {}: {}", i16_arg.name, e);
-					});
-					i16_arg.set = true;
-					previous_arg = None;
-					continue 'arg_loop;
-				}
-			}
-
-			panic!("Unhandled key-value arg: {}", prev);
-		}
-
-		if arg.len() < 3
-			|| arg.as_bytes()[0] != b'-'
-			|| arg.as_bytes()[1] != b'-'
-		{
-			panic!("Unexpected argument: {}", arg)
-		}
-
-		arg = arg.split_off(2);
-
-		for bool_arg in &mut *bool_args {
-			if arg == bool_arg.name {
-				bool_arg.value = true;
-				continue 'arg_loop;
-			}
-		}
-
-		for i16_arg in &*i16_args {
-			if arg == i16_arg.name {
-				previous_arg = Some(arg);
-				continue 'arg_loop;
-			}
-		}
-
-		for string_arg in &*string_args {
-			if arg == string_arg.name {
-				previous_arg = Some(arg);
-				continue 'arg_loop;
-			}
-		}
-
-		panic!("Unsupported argument: {}", arg)
-	}
 }
 
 fn handle_read(stream: &mut TcpStream) -> Option<ReadResult> {
