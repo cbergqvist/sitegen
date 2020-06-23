@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::io::{ErrorKind, Read};
 use std::net::{TcpListener, TcpStream};
@@ -12,6 +13,7 @@ use std::{env, fmt, fs};
 
 use notify::{watcher, RecursiveMode, Watcher};
 
+mod atom;
 mod front_matter;
 mod markdown;
 mod util;
@@ -163,9 +165,32 @@ fn inner_main(
 			panic!("Failed creating \"{}\": {}.", output_dir.display(), e)
 		});
 
+		let mut groups = HashMap::new();
 		for file_name in &markdown_files {
-			output_files
-				.push(markdown::process_file(file_name, input_dir, output_dir))
+			let generated =
+				markdown::process_file(file_name, input_dir, output_dir);
+			if let Some(group) = generated.group {
+				let entries = groups.entry(group).or_insert_with(Vec::new);
+				entries.push(atom::FeedEntry {
+					front_matter: generated.front_matter,
+					html_content: generated.html_content,
+					permalink: generated.path.clone(),
+				});
+			}
+			output_files.push(generated.path)
+		}
+
+		for (group, entries) in groups {
+			let mut feed_name = output_dir.join(PathBuf::from(&group));
+			feed_name.set_extension("xml");
+			let header = atom::FeedHeader {
+				title: group,
+				base_url: "http://test.com/".to_string(),
+				latest_update: "2001-01-19T20:10:00Z".to_string(),
+				author_name: "John Doe".to_string(),
+				author_email: "no@way.com".to_string(),
+			};
+			atom::generate(&feed_name, header, entries, output_dir);
 		}
 	}
 
@@ -331,7 +356,7 @@ fn get_path_to_refresh(
 			}
 		}
 
-		return Some(markdown::process_file(&path, input_dir, output_dir));
+		return Some(markdown::process_file(&path, input_dir, output_dir).path);
 	} else if path.extension() == Some(html_extension) {
 		let parent_path = path.parent().unwrap_or_else(|| {
 			panic!("Path without a parent directory?: {}", path.display())
@@ -358,11 +383,14 @@ fn get_path_to_refresh(
 					.join(file_stem)
 					.with_extension(markdown_extension);
 				if templated_file.exists() {
-					return Some(markdown::process_file(
-						&templated_file,
-						input_dir,
-						output_dir,
-					));
+					return Some(
+						markdown::process_file(
+							&templated_file,
+							input_dir,
+							output_dir,
+						)
+						.path,
+					);
 				}
 			} else {
 				let mut output_files = Vec::new();
@@ -371,7 +399,7 @@ fn get_path_to_refresh(
 						file_name, input_dir, output_dir,
 					))
 				}
-				return output_files.first().cloned();
+				return output_files.first().map(|g| g.path.clone());
 			}
 		} else if parent_path_file_name == "_includes" {
 			// Since we don't track what includes what, just do a full refresh.

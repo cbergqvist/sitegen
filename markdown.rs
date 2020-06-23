@@ -9,6 +9,18 @@ use crate::front_matter::FrontMatter;
 
 use pulldown_cmark::{html, Parser};
 
+pub struct GeneratedFile {
+	pub path: PathBuf,
+	pub group: Option<String>,
+	pub front_matter: FrontMatter,
+	pub html_content: String,
+}
+
+struct ComputedFilePath {
+	path: PathBuf,
+	group: Option<String>,
+}
+
 pub fn get_files(
 	input_dir: &PathBuf,
 	markdown_extension: &OsStr,
@@ -86,7 +98,7 @@ pub fn process_file(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-) -> PathBuf {
+) -> GeneratedFile {
 	let timer = Instant::now();
 	let input_file = fs::File::open(&input_file_path).unwrap_or_else(|e| {
 		panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
@@ -94,7 +106,7 @@ pub fn process_file(
 
 	let mut reader = BufReader::new(input_file);
 
-	let front_matter = super::front_matter::parse(input_file_path, &mut reader);
+	let front_matter = crate::front_matter::parse(input_file_path, &mut reader);
 	let mut markdown_content = String::new();
 	let _size =
 		reader
@@ -106,26 +118,26 @@ pub fn process_file(
 					e
 				)
 			});
-	let mut parser = Parser::new(&markdown_content);
+
 	let mut output = Vec::new();
 	let mut output_buf = BufWriter::new(&mut output);
-	let template_file_path =
-		compute_template_file_path(input_file_path, root_input_dir);
+	let template_path_result =
+		compute_template_path(input_file_path, root_input_dir);
+
+	let mut html_content = String::new();
+	html::push_html(&mut html_content, Parser::new(&markdown_content));
 
 	write_html_page(
 		&mut output_buf,
 		&front_matter,
-		&mut parser,
+		&html_content,
 		input_file_path,
-		&template_file_path,
+		&template_path_result.path,
 		root_input_dir,
 	);
 
-	let output_file_path = compute_output_file_path(
-		input_file_path,
-		root_input_dir,
-		root_output_dir,
-	);
+	let output_file_path =
+		compute_output_path(input_file_path, root_input_dir, root_output_dir);
 
 	let closest_output_dir = output_file_path.parent().unwrap_or_else(|| {
 		panic!(
@@ -175,20 +187,25 @@ pub fn process_file(
 		timer.elapsed().as_millis()
 	);
 
-	output_file_path
-		.strip_prefix(root_output_dir)
-		.unwrap_or_else(|e| {
-			panic!(
-				"Failed stripping prefix \"{}\" from \"{}\": {}",
-				root_output_dir.display(),
-				output_file_path.display(),
-				e
-			)
-		})
-		.to_path_buf()
+	GeneratedFile {
+		path: output_file_path
+			.strip_prefix(root_output_dir)
+			.unwrap_or_else(|e| {
+				panic!(
+					"Failed stripping prefix \"{}\" from \"{}\": {}",
+					root_output_dir.display(),
+					output_file_path.display(),
+					e
+				)
+			})
+			.to_path_buf(),
+		group: template_path_result.group,
+		front_matter,
+		html_content,
+	}
 }
 
-fn compute_output_file_path(
+fn compute_output_path(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
@@ -250,7 +267,7 @@ fn compute_output_file_path(
 fn write_html_page(
 	mut output_buf: &mut BufWriter<&mut Vec<u8>>,
 	front_matter: &FrontMatter,
-	mut parser: &mut Parser,
+	html_content: &str,
 	markdown_file_path: &PathBuf,
 	template_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
@@ -307,13 +324,13 @@ fn write_html_page(
 					}
 					State::ValueObject => panic!("Unexpected newline while reading value object identifier at {}:{}:{}.", template_file_path.display(), line_number, column_number),
 					State::ValueField => {
-						output_template_value(&mut output_buf, &mut object, &mut field, front_matter, &mut parser, markdown_file_path);
+						output_template_value(&mut output_buf, &mut object, &mut field, front_matter, html_content);
 						state = State::ValueEnd
 					}
 					State::WaitingForCloseBracket => panic!("Expected close bracket but got newline at {}:{}:{}.", template_file_path.display(), line_number, column_number),
 					State::TagFunction => panic!("Unexpected newline in the middle of function at {}:{}:{}.", template_file_path.display(), line_number, column_number),
 					State::TagParameter => {
-						run_function(&mut output_buf, &mut function, &mut parameter, front_matter, parser, markdown_file_path, template_file_path, root_input_dir);
+						run_function(&mut output_buf, &mut function, &mut parameter, front_matter, html_content, markdown_file_path, template_file_path, root_input_dir);
 						state = State::TagEnd
 					}
 					State::ValueStart | State::ValueEnd | State::TagStart | State::TagEnd => {}
@@ -358,7 +375,7 @@ fn write_html_page(
 							b'.' => panic!("Additional dot in template identifier at {}:{}:{}.", template_file_path.display(), line_number, column_number),
 							b'}' => state = State::WaitingForCloseBracket,
 							b' ' | b'\t' => {
-								output_template_value(&mut output_buf, &mut object, &mut field, front_matter, &mut parser, markdown_file_path);
+								output_template_value(&mut output_buf, &mut object, &mut field, front_matter, html_content);
 								state = State::ValueEnd
 							}
 							_ => field.push(byte)
@@ -392,7 +409,7 @@ fn write_html_page(
 						match byte {
 							b' ' | b'\t' => {
 								if !parameter.is_empty() {
-									run_function(&mut output_buf, &mut function, &mut parameter, front_matter, parser, markdown_file_path, template_file_path, root_input_dir);
+									run_function(&mut output_buf, &mut function, &mut parameter, front_matter, html_content, markdown_file_path, template_file_path, root_input_dir);
 									state = State::TagEnd;
 								}
 							}
@@ -421,10 +438,10 @@ fn write_html_page(
 	}
 }
 
-fn compute_template_file_path(
+fn compute_template_path(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
-) -> PathBuf {
+) -> ComputedFilePath {
 	let mut template_file_path = PathBuf::from(root_input_dir);
 	template_file_path.push("_layouts");
 	let input_file_parent = input_file_path.parent().unwrap_or_else(|| {
@@ -467,13 +484,18 @@ fn compute_template_file_path(
 			.to_string_lossy()
 			.to_string()
 	};
+	let mut group = None;
 	if template_name.ends_with('s') {
+		group = Some(template_name.clone());
 		template_name.truncate(template_name.len() - 1)
 	}
 	template_file_path.push(template_name);
 	template_file_path.set_extension("html");
 
-	template_file_path
+	ComputedFilePath {
+		path: template_file_path,
+		group,
+	}
 }
 
 fn write_to_output(output_buf: &mut BufWriter<&mut Vec<u8>>, data: &[u8]) {
@@ -487,8 +509,7 @@ fn output_template_value(
 	object: &mut Vec<u8>,
 	field: &mut Vec<u8>,
 	front_matter: &FrontMatter,
-	parser: &mut Parser,
-	markdown_file_path: &PathBuf,
+	html_content: &str,
 ) {
 	if object.is_empty() {
 		panic!("Empty object name.")
@@ -504,17 +525,7 @@ fn output_template_value(
 
 	let field_str = String::from_utf8_lossy(field);
 	match field_str.borrow() {
-		"content" => {
-			// This only works once, but it would be weird to have the content
-			// repeated multiple times.
-			html::write_html(&mut output_buf, parser).unwrap_or_else(|e| {
-				panic!(
-					"Failed converting Markdown file \"{}\" to HTML: {}.",
-					&markdown_file_path.display(),
-					e
-				)
-			})
-		}
+		"content" => write_to_output(&mut output_buf, html_content.as_bytes()),
 		"date" => {
 			write_to_output(&mut output_buf, front_matter.date.as_bytes())
 		}
@@ -555,7 +566,7 @@ fn run_function(
 	function: &mut Vec<u8>,
 	parameter: &mut Vec<u8>,
 	front_matter: &FrontMatter,
-	parser: &mut Parser,
+	html_content: &str,
 	markdown_file_path: &PathBuf,
 	template_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
@@ -583,7 +594,7 @@ fn run_function(
 				write_html_page(
 					&mut output_buf,
 					front_matter,
-					parser,
+					html_content,
 					markdown_file_path,
 					&included_file,
 					root_input_dir,
