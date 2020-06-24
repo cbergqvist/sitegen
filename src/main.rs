@@ -91,7 +91,7 @@ struct Config {
 
 impl ConfigArgs {
 	fn new() -> Self {
-		ConfigArgs {
+		Self {
 			author: StringArg {
 				name: "author",
 				help: "Set the name of the author.",
@@ -281,14 +281,11 @@ Arguments:"
 }
 
 fn inner_main(config: &Config) {
-	let markdown_extension = OsStr::new("md");
-
 	let mut output_files = Vec::new();
 
-	let markdown_files =
-		markdown::get_files(&config.input_dir, markdown_extension);
+	let files = markdown::get_files(&config.input_dir);
 
-	if markdown_files.is_empty() {
+	if files.is_empty() {
 		println!(
 			"Found no valid file entries under \"{}\".",
 			config.input_dir.display()
@@ -303,7 +300,7 @@ fn inner_main(config: &Config) {
 		});
 
 		let mut groups = HashMap::new();
-		for file_name in &markdown_files {
+		for file_name in &files.markdown {
 			let generated = markdown::process_file(
 				file_name,
 				&config.input_dir,
@@ -332,6 +329,12 @@ fn inner_main(config: &Config) {
 			};
 			atom::generate(&feed_name, &header, entries, &config.output_dir);
 		}
+
+		util::copy_files_with_prefix(
+			&files.raw,
+			&config.input_dir,
+			&config.output_dir,
+		)
 	}
 
 	if !config.watch {
@@ -360,12 +363,7 @@ fn inner_main(config: &Config) {
 
 	// As we start watching some time after we've done initial processing, it is
 	// possible that files get modified in between and changes get lost.
-	watch_fs(
-		&config.input_dir,
-		&config.output_dir,
-		markdown_extension,
-		&fs_cond_clone,
-	);
+	watch_fs(&config.input_dir, &config.output_dir, &fs_cond_clone);
 
 	// We never really get here as we loop infinitely until Ctrl+C.
 	listening_thread
@@ -426,7 +424,6 @@ fn spawn_listening_thread(
 fn watch_fs(
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
-	markdown_extension: &OsStr,
 	fs_cond: &Arc<(Mutex<Refresh>, Condvar)>,
 ) {
 	let (tx, rx) = channel();
@@ -441,7 +438,6 @@ fn watch_fs(
 			panic!("Unable to watch {}: {}", input_dir.display(), e);
 		});
 
-	let html_extension = OsStr::new("html");
 	loop {
 		match rx.recv() {
 			Ok(event) => {
@@ -449,13 +445,8 @@ fn watch_fs(
 				match event {
 					notify::DebouncedEvent::Write(path)
 					| notify::DebouncedEvent::Create(path) => {
-						let path_to_communicate = get_path_to_refresh(
-							path,
-							markdown_extension,
-							html_extension,
-							input_dir,
-							output_dir,
-						);
+						let path_to_communicate =
+							get_path_to_refresh(path, input_dir, output_dir);
 						println!(
 							"Path to communicate: {:?}",
 							path_to_communicate
@@ -484,11 +475,13 @@ fn watch_fs(
 
 fn get_path_to_refresh(
 	mut path: PathBuf,
-	markdown_extension: &OsStr,
-	html_extension: &OsStr,
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
 ) -> Option<PathBuf> {
+	let css_extension = OsStr::new(util::CSS_EXTENSION);
+	let html_extension = OsStr::new(util::HTML_EXTENSION);
+	let markdown_extension = OsStr::new(util::MARKDOWN_EXTENSION);
+
 	path = path.canonicalize().unwrap_or_else(|e| {
 		panic!("Canonicalization of {} failed: {}", path.display(), e)
 	});
@@ -516,21 +509,25 @@ fn get_path_to_refresh(
 				panic!("Missing file name in path: {}", parent_path.display())
 			});
 		if parent_path_file_name == "_layouts" {
-			let file_stem = path.file_stem().unwrap_or_else(|| {
+			let template_file_stem = path.file_stem().unwrap_or_else(|| {
 				panic!("Missing file stem in path: {}", path.display())
 			});
-			let mut dir_name = OsString::from(file_stem);
+			let mut dir_name = OsString::from(template_file_stem);
 			dir_name.push("s");
 			let markdown_dir = input_dir.join(dir_name);
-			let markdown_files = if markdown_dir.exists() {
-				markdown::get_files(&markdown_dir, markdown_extension)
+			// If for example the post.html template was changed, try to get all
+			// markdown files under /posts/.
+			let files = if markdown_dir.exists() {
+				markdown::get_files(&markdown_dir)
 			} else {
-				Vec::new()
+				markdown::InputFileCollection::new()
 			};
 
-			if markdown_files.is_empty() {
+			// If we didn't find any markdown files, assume that the template
+			// file just exists for the sake of a single markdown file.
+			if files.is_empty() {
 				let templated_file = input_dir
-					.join(file_stem)
+					.join(template_file_stem)
 					.with_extension(markdown_extension);
 				if templated_file.exists() {
 					return Some(
@@ -544,23 +541,29 @@ fn get_path_to_refresh(
 				}
 			} else {
 				let mut output_files = Vec::new();
-				for file_name in &markdown_files {
+				for file_name in &files.markdown {
 					output_files.push(markdown::process_file(
 						file_name, input_dir, output_dir,
 					))
 				}
+
 				return output_files.first().map(|g| g.path.clone());
 			}
 		} else if parent_path_file_name == "_includes" {
 			// Since we don't track what includes what, just do a full refresh.
-			let markdown_files =
-				markdown::get_files(input_dir, markdown_extension);
-			for file_name in &markdown_files {
+			let files = markdown::get_files(input_dir);
+			for file_name in &files.markdown {
 				markdown::process_file(file_name, input_dir, output_dir);
 			}
+
 			// Special identifier making JavaScript reload the current page.
 			return Some(PathBuf::from("*"));
 		}
+	} else if path.extension() == Some(css_extension) {
+		util::copy_files_with_prefix(&[path], &input_dir, &output_dir);
+
+		// Special identifier making JavaScript reload the current page.
+		return Some(PathBuf::from("*"));
 	}
 
 	None
@@ -637,7 +640,18 @@ fn handle_write(
 	root_dir: &PathBuf,
 	start_file: Option<PathBuf>,
 ) {
-	let full_path = root_dir.join(&path);
+	const TEXT_OUTPUT_EXTENSIONS: [&str; 3] = [
+		util::HTML_EXTENSION,
+		util::CSS_EXTENSION,
+		util::XML_EXTENSION,
+	];
+	let mut full_path = root_dir.join(&path);
+	if !full_path.is_file() {
+		let with_index = full_path.join("index.html");
+		if with_index.is_file() {
+			full_path = with_index;
+		}
+	}
 	if full_path.is_file() {
 		println!("Opening: {}", full_path.display());
 		match fs::File::open(&full_path) {
@@ -645,25 +659,25 @@ fn handle_write(
 				write(b"HTTP/1.1 200 OK\r\n", &mut stream);
 				if let Some(extension) = path.extension() {
 					let extension = extension.to_string_lossy();
-					if extension == "html" {
+					if TEXT_OUTPUT_EXTENSIONS.iter().any(|&ext| ext == extension) {
 						write(format!("Content-Type: text/{}; charset=UTF-8\r\n\r\n", extension).as_bytes(), &mut stream);
-					}
-				}
-				let mut buf = [0_u8; 64 * 1024];
-				loop {
-					let size =
-						input_file.read(&mut buf).unwrap_or_else(|e| {
-							panic!(
-								"Failed reading from {}: {}",
-								full_path.display(),
-								e
-							);
-						});
-					if size < 1 {
-						break;
-					}
+						let mut buf = [0_u8; 64 * 1024];
+						loop {
+							let size =
+								input_file.read(&mut buf).unwrap_or_else(|e| {
+									panic!(
+										"Failed reading from {}: {}",
+										full_path.display(),
+										e
+									);
+								});
+							if size < 1 {
+								break;
+							}
 
-					write(&buf[0..=size], &mut stream);
+							write(&buf[0..size], &mut stream);
+						}
+					}
 				}
 			}
 			Err(e) => {
@@ -680,7 +694,7 @@ fn handle_write(
 				}
 			}
 		}
-	} else {
+	} else if path.to_string_lossy() == "dev" {
 		println!("Requested path is not a file, returning index.");
 		let iframe_src = if let Some(path) = start_file {
 			let mut s = String::from(" src=\"");
@@ -724,6 +738,11 @@ BODY {{
 <iframe name=\"preview\"{} style=\"border: 0; margin: 0; width: 100%; height: 100%\"></iframe>
 </body>
 </html>\r\n", iframe_src).as_bytes(), &mut stream);
+	} else {
+		write(
+			format!("HTTP/1.1 404 Not found\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>Couldn't find: {}</body></html>\r\n", full_path.display()).as_bytes(),
+			&mut stream,
+		)
 	}
 }
 

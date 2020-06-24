@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::front_matter::FrontMatter;
+use crate::util;
 
 use pulldown_cmark::{html, Parser};
 
@@ -16,15 +17,37 @@ pub struct GeneratedFile {
 	pub html_content: String,
 }
 
+pub struct InputFileCollection {
+	pub markdown: Vec<PathBuf>,
+	pub raw: Vec<PathBuf>,
+}
+
+impl InputFileCollection {
+	pub fn new() -> Self {
+		Self {
+			markdown: Vec::new(),
+			raw: Vec::new(),
+		}
+	}
+
+	pub fn is_empty(&self) -> bool {
+		self.markdown.is_empty() || self.raw.is_empty()
+	}
+
+	fn append(&mut self, other: &mut Self) {
+		self.markdown.append(&mut other.markdown);
+		self.raw.append(&mut other.raw);
+	}
+}
+
 struct ComputedFilePath {
 	path: PathBuf,
 	group: Option<String>,
 }
 
-pub fn get_files(
-	input_dir: &PathBuf,
-	markdown_extension: &OsStr,
-) -> Vec<PathBuf> {
+pub fn get_files(input_dir: &PathBuf) -> InputFileCollection {
+	let markdown_extension = OsStr::new(util::MARKDOWN_EXTENSION);
+
 	let entries = fs::read_dir(input_dir).unwrap_or_else(|e| {
 		panic!(
 			"Failed reading paths from \"{}\": {}.",
@@ -32,22 +55,37 @@ pub fn get_files(
 			e
 		)
 	});
-	let mut files = Vec::new();
+	let mut result = InputFileCollection::new();
+	let css_extension = OsStr::new("css");
 	for entry in entries {
 		match entry {
 			Ok(entry) => {
 				let path = entry.path();
 				if let Ok(ft) = entry.file_type() {
 					if ft.is_file() {
-						if path.extension() == Some(markdown_extension) {
-							files.push(path);
-							println!(
-								"Markdown!: \"{}\"",
-								entry.path().display()
-							);
+						if let Some(extension) = path.extension() {
+							if extension == markdown_extension {
+								result.markdown.push(path);
+								println!(
+									"File with recognized extension: \"{}\"",
+									entry.path().display()
+								);
+							} else if extension == css_extension {
+								result.raw.push(path);
+								println!(
+									"File with recognized extension: \"{}\"",
+									entry.path().display()
+								);
+							} else {
+								println!(
+									"Skipping file with unrecognized extension ({}) file: \"{}\"",
+									extension.to_string_lossy(),
+									entry.path().display()
+								);
+							}
 						} else {
 							println!(
-								"Skipping non-.md file: \"{}\"",
+								"Skipping extension-less file: \"{}\"",
 								entry.path().display()
 							);
 						}
@@ -69,9 +107,8 @@ pub fn get_files(
 								path.display()
 							);
 						} else {
-							let mut subdir_files =
-								self::get_files(&path, markdown_extension);
-							files.append(&mut subdir_files);
+							let mut subdir_files = self::get_files(&path);
+							result.append(&mut subdir_files);
 						}
 					} else {
 						println!("Skipping non-file/dir {}", path.display());
@@ -91,7 +128,7 @@ pub fn get_files(
 		}
 	}
 
-	files
+	result
 }
 
 pub fn process_file(
@@ -181,9 +218,10 @@ pub fn process_file(
 	});
 
 	println!(
-		"Converted {} to {} after {} ms.",
+		"Converted {} to {} (using template {}) after {} ms.",
 		input_file_path.display(),
 		output_file_path.display(),
+		template_path_result.path.display(),
 		timer.elapsed().as_millis()
 	);
 
@@ -442,8 +480,7 @@ fn compute_template_path(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 ) -> ComputedFilePath {
-	let mut template_file_path = PathBuf::from(root_input_dir);
-	template_file_path.push("_layouts");
+	let mut template_file_path = root_input_dir.join(PathBuf::from("_layouts"));
 	let input_file_parent = input_file_path.parent().unwrap_or_else(|| {
 		panic!("Failed to get parent from: {}", input_file_path.display())
 	});
@@ -491,6 +528,19 @@ fn compute_template_path(
 	}
 	template_file_path.push(template_name);
 	template_file_path.set_extension("html");
+	if !template_file_path.exists() {
+		let mut default_template = template_file_path.clone();
+		default_template.set_file_name("default.html");
+		if !default_template.exists() {
+			panic!(
+				"Failed resolving template file for: {}, tried with {} and {}",
+				input_file_path.display(),
+				template_file_path.display(),
+				default_template.display(),
+			);
+		}
+		template_file_path = default_template;
+	}
 
 	ComputedFilePath {
 		path: template_file_path,
