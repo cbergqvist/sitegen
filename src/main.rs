@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::io::{ErrorKind, Read};
@@ -281,7 +282,7 @@ Arguments:"
 }
 
 fn inner_main(config: &Config) {
-	let mut output_files = Vec::new();
+	let mut file_mappings = HashMap::new();
 
 	let files = markdown::get_files(&config.input_dir);
 
@@ -305,7 +306,7 @@ fn inner_main(config: &Config) {
 				&config.input_dir,
 				&config.output_dir,
 			);
-			output_files.push(path)
+			checked_insert(file_name.clone(), path, &mut file_mappings)
 		}
 
 		let mut groups = HashMap::new();
@@ -323,7 +324,11 @@ fn inner_main(config: &Config) {
 					permalink: generated.path.clone(),
 				});
 			}
-			output_files.push(generated.path)
+			checked_insert(
+				file_name.clone(),
+				generated.path,
+				&mut file_mappings,
+			)
 		}
 
 		for (group, entries) in groups {
@@ -360,7 +365,7 @@ fn inner_main(config: &Config) {
 
 	let root_dir = PathBuf::from(&config.output_dir);
 	let fs_cond_clone = fs_cond.clone();
-	let start_file = output_files.first().cloned();
+	let start_file = find_newest_file(&file_mappings);
 
 	let listening_thread = spawn_listening_thread(
 		&config.host,
@@ -378,6 +383,59 @@ fn inner_main(config: &Config) {
 	listening_thread
 		.join()
 		.expect("Failed joining listening thread.");
+}
+
+fn checked_insert(
+	key: PathBuf,
+	value: PathBuf,
+	map: &mut HashMap<PathBuf, PathBuf>,
+) {
+	match map.entry(key) {
+		Entry::Occupied(oe) => {
+			panic!(
+				"Key {} already had value: {}, when trying to insert: {}",
+				oe.key().display(),
+				oe.get().display(),
+				value.display()
+			);
+		}
+		Entry::Vacant(ve) => ve.insert(value),
+	};
+}
+
+fn find_newest_file(
+	file_mappings: &HashMap<PathBuf, PathBuf>,
+) -> Option<PathBuf> {
+	let mut newest_file = None;
+	let mut newest_time = std::time::UNIX_EPOCH;
+	for (input_file, output_file) in file_mappings {
+		let metadata = fs::metadata(input_file).unwrap_or_else(|e| {
+			panic!(
+				"Failed fetching metadata for {}: {}",
+				input_file.display(),
+				e
+			)
+		});
+
+		let modified = metadata.modified().unwrap_or_else(|e| {
+			panic!(
+				"Failed fetching modified time for {}: {}",
+				input_file.display(),
+				e
+			)
+		});
+
+		if modified > newest_time {
+			newest_time = modified;
+			newest_file = Some(output_file.clone());
+		}
+	}
+
+	if let Some(file) = &newest_file {
+		println!("Newest file: {}", &file.display());
+	}
+
+	newest_file
 }
 
 fn spawn_listening_thread(
