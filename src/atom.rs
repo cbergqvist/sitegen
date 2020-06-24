@@ -110,7 +110,16 @@ pub fn generate(
 
 	write(b"</feed>", &mut output);
 
+	feed.write_all(output.buffer()).unwrap_or_else(|e| {
+		panic!("Failed writing to \"{}\": {}.", &file_name.display(), e)
+	});
+
 	// Avoiding sync_all() for now to be friendlier to disks.
-	feed.write_all(output.buffer()).unwrap();
-	feed.sync_data().unwrap();
+	feed.sync_data().unwrap_or_else(|e| {
+		panic!(
+			"Failed sync_data() for \"{}\": {}.",
+			&file_name.display(),
+			e
+		)
+	});
 }
