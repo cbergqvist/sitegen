@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use crate::front_matter::FrontMatter;
 use crate::util;
+use crate::util::write_to_stream;
 
 use pulldown_cmark::{html, Parser};
 
@@ -18,23 +19,26 @@ pub struct GeneratedFile {
 }
 
 pub struct InputFileCollection {
+	pub html: Vec<PathBuf>,
 	pub markdown: Vec<PathBuf>,
 	pub raw: Vec<PathBuf>,
 }
 
 impl InputFileCollection {
-	pub fn new() -> Self {
+	pub const fn new() -> Self {
 		Self {
+			html: Vec::new(),
 			markdown: Vec::new(),
 			raw: Vec::new(),
 		}
 	}
 
 	pub fn is_empty(&self) -> bool {
-		self.markdown.is_empty() || self.raw.is_empty()
+		self.html.is_empty() || self.markdown.is_empty() || self.raw.is_empty()
 	}
 
 	fn append(&mut self, other: &mut Self) {
+		self.html.append(&mut other.html);
 		self.markdown.append(&mut other.markdown);
 		self.raw.append(&mut other.raw);
 	}
@@ -46,6 +50,8 @@ struct ComputedFilePath {
 }
 
 pub fn get_files(input_dir: &PathBuf) -> InputFileCollection {
+	let css_extension = OsStr::new(util::CSS_EXTENSION);
+	let html_extension = OsStr::new(util::HTML_EXTENSION);
 	let markdown_extension = OsStr::new(util::MARKDOWN_EXTENSION);
 
 	let entries = fs::read_dir(input_dir).unwrap_or_else(|e| {
@@ -56,7 +62,6 @@ pub fn get_files(input_dir: &PathBuf) -> InputFileCollection {
 		)
 	});
 	let mut result = InputFileCollection::new();
-	let css_extension = OsStr::new("css");
 	for entry in entries {
 		match entry {
 			Ok(entry) => {
@@ -64,18 +69,21 @@ pub fn get_files(input_dir: &PathBuf) -> InputFileCollection {
 				if let Ok(ft) = entry.file_type() {
 					if ft.is_file() {
 						if let Some(extension) = path.extension() {
-							if extension == markdown_extension {
-								result.markdown.push(path);
+							let recognized = || {
 								println!(
 									"File with recognized extension: \"{}\"",
 									entry.path().display()
-								);
+								)
+							};
+							if extension == html_extension {
+								result.html.push(path);
+								recognized();
+							} else if extension == markdown_extension {
+								result.markdown.push(path);
+								recognized();
 							} else if extension == css_extension {
 								result.raw.push(path);
-								println!(
-									"File with recognized extension: \"{}\"",
-									entry.path().display()
-								);
+								recognized();
 							} else {
 								println!(
 									"Skipping file with unrecognized extension ({}) file: \"{}\"",
@@ -137,88 +145,58 @@ pub fn process_file(
 	root_output_dir: &PathBuf,
 ) -> GeneratedFile {
 	let timer = Instant::now();
-	let input_file = fs::File::open(&input_file_path).unwrap_or_else(|e| {
-		panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
-	});
+	let mut input_file =
+		BufReader::new(fs::File::open(&input_file_path).unwrap_or_else(|e| {
+			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
+		}));
 
-	let mut reader = BufReader::new(input_file);
+	let front_matter =
+		crate::front_matter::parse(input_file_path, &mut input_file);
 
-	let front_matter = crate::front_matter::parse(input_file_path, &mut reader);
 	let mut markdown_content = String::new();
-	let _size =
-		reader
-			.read_to_string(&mut markdown_content)
-			.unwrap_or_else(|e| {
-				panic!(
-					"Failed reading Markdown content from \"{}\": {}.",
-					&input_file_path.display(),
-					e
-				)
-			});
+	let _size = input_file
+		.read_to_string(&mut markdown_content)
+		.unwrap_or_else(|e| {
+			panic!(
+				"Failed reading Markdown content from \"{}\": {}.",
+				&input_file_path.display(),
+				e
+			)
+		});
 
-	let mut output = Vec::new();
-	let mut output_buf = BufWriter::new(&mut output);
+	let mut output_buf = BufWriter::new(Vec::new());
 	let template_path_result =
 		compute_template_path(input_file_path, root_input_dir);
 
 	let mut html_content = String::new();
 	html::push_html(&mut html_content, Parser::new(&markdown_content));
 
+	let mut template_file = BufReader::new(
+		fs::File::open(&template_path_result.path).unwrap_or_else(|e| {
+			panic!(
+				"Failed opening template file {}: {}",
+				template_path_result.path.display(),
+				e
+			)
+		}),
+	);
+
 	write_html_page(
 		&mut output_buf,
 		&front_matter,
-		&html_content,
-		input_file_path,
+		Some(&html_content),
 		&template_path_result.path,
+		&mut template_file,
 		root_input_dir,
 	);
 
 	let output_file_path =
 		compute_output_path(input_file_path, root_input_dir, root_output_dir);
 
-	let closest_output_dir = output_file_path.parent().unwrap_or_else(|| {
-		panic!(
-			"Output file path without a parent directory?: {}",
-			output_file_path.display()
-		)
-	});
-	fs::create_dir_all(closest_output_dir).unwrap_or_else(|e| {
-		panic!(
-			"Failed creating directories for {}: {}",
-			closest_output_dir.display(),
-			e
-		)
-	});
-
-	let mut output_file =
-		fs::File::create(&output_file_path).unwrap_or_else(|e| {
-			panic!(
-				"Failed creating \"{}\": {}.",
-				&output_file_path.display(),
-				e
-			)
-		});
-	output_file
-		.write_all(output_buf.buffer())
-		.unwrap_or_else(|e| {
-			panic!(
-				"Failed writing to \"{}\": {}.",
-				&output_file_path.display(),
-				e
-			)
-		});
-
-	// Avoiding sync_all() for now to be friendlier to disks.
-	output_file.sync_data().unwrap_or_else(|e| {
-		panic!(
-			"Failed sync_data() for \"{}\": {}.",
-			&output_file_path.display(),
-			e
-		)
-	});
+	write_buffer_to_file(output_buf.buffer(), &output_file_path);
 
 	println!(
-		"Converted {} to {} (using template {}) after {} ms.",
+		"Converted {} to {} (using template {}) in {} ms.",
 		input_file_path.display(),
 		output_file_path.display(),
 		template_path_result.path.display(),
@@ -241,6 +219,84 @@ pub fn process_file(
 		front_matter,
 		html_content,
 	}
+}
+
+pub fn process_template_file_without_markdown(
+	input_file_path: &PathBuf,
+	root_input_dir: &PathBuf,
+	root_output_dir: &PathBuf,
+) -> PathBuf {
+	let timer = Instant::now();
+	let mut input_file =
+		BufReader::new(fs::File::open(&input_file_path).unwrap_or_else(|e| {
+			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
+		}));
+
+	let front_matter =
+		crate::front_matter::parse(input_file_path, &mut input_file);
+
+	let output_file_path =
+		compute_output_path(input_file_path, root_input_dir, root_output_dir);
+
+	let mut output_buf = BufWriter::new(Vec::new());
+
+	write_html_page(
+		&mut output_buf,
+		&front_matter,
+		None,
+		input_file_path,
+		&mut input_file,
+		root_input_dir,
+	);
+
+	write_buffer_to_file(output_buf.buffer(), &output_file_path);
+
+	println!(
+		"Processed markdown-less {} to {} in {} ms.",
+		input_file_path.display(),
+		output_file_path.display(),
+		timer.elapsed().as_millis(),
+	);
+
+	output_file_path
+		.strip_prefix(root_output_dir)
+		.unwrap_or_else(|e| {
+			panic!(
+				"Failed stripping prefix \"{}\" from \"{}\": {}",
+				root_output_dir.display(),
+				output_file_path.display(),
+				e
+			)
+		})
+		.to_path_buf()
+}
+
+fn write_buffer_to_file(buffer: &[u8], path: &PathBuf) {
+	let closest_output_dir = path.parent().unwrap_or_else(|| {
+		panic!(
+			"Output file path without a parent directory?: {}",
+			path.display()
+		)
+	});
+	fs::create_dir_all(closest_output_dir).unwrap_or_else(|e| {
+		panic!(
+			"Failed creating directories for {}: {}",
+			closest_output_dir.display(),
+			e
+		)
+	});
+
+	let mut output_file = fs::File::create(&path).unwrap_or_else(|e| {
+		panic!("Failed creating \"{}\": {}.", &path.display(), e)
+	});
+	output_file.write_all(buffer).unwrap_or_else(|e| {
+		panic!("Failed writing to \"{}\": {}.", &path.display(), e)
+	});
+
+	// Avoiding sync_all() for now to be friendlier to disks.
+	output_file.sync_data().unwrap_or_else(|e| {
+		panic!("Failed sync_data() for \"{}\": {}.", &path.display(), e)
+	});
 }
 
 fn compute_output_path(
@@ -303,11 +359,11 @@ fn compute_output_path(
 // Allowing more lines to keep state machine cohesive.
 #[allow(clippy::too_many_lines)]
 fn write_html_page(
-	mut output_buf: &mut BufWriter<&mut Vec<u8>>,
+	mut output_buf: &mut BufWriter<Vec<u8>>,
 	front_matter: &FrontMatter,
-	html_content: &str,
-	markdown_file_path: &PathBuf,
+	html_content: Option<&str>,
 	template_file_path: &PathBuf,
+	template_file: &mut BufReader<fs::File>,
 	root_input_dir: &PathBuf,
 ) {
 	enum State {
@@ -324,14 +380,6 @@ fn write_html_page(
 		WaitingForCloseBracket,
 	}
 
-	let mut template_file =
-		fs::File::open(&template_file_path).unwrap_or_else(|e| {
-			panic!(
-				"Failed opening template file {}: {}",
-				template_file_path.display(),
-				e
-			)
-		});
 	let mut state = State::JustHtml;
 	let mut buf = [0_u8; 64 * 1024];
 	let mut line_number = 1;
@@ -355,9 +403,9 @@ fn write_html_page(
 		for &byte in &buf[0..size] {
 			if byte == b'\n' {
 				match state {
-					State::JustHtml => { write_to_output(output_buf, &[byte]); }
+					State::JustHtml => { write_to_stream(&[byte], output_buf); }
 					State::LastOpenBracket => {
-						write_to_output(output_buf, b"{\n");
+						write_to_stream(b"{\n", output_buf);
 						state = State::JustHtml
 					}
 					State::ValueObject => panic!("Unexpected newline while reading value object identifier at {}:{}:{}.", template_file_path.display(), line_number, column_number),
@@ -368,7 +416,7 @@ fn write_html_page(
 					State::WaitingForCloseBracket => panic!("Expected close bracket but got newline at {}:{}:{}.", template_file_path.display(), line_number, column_number),
 					State::TagFunction => panic!("Unexpected newline in the middle of function at {}:{}:{}.", template_file_path.display(), line_number, column_number),
 					State::TagParameter => {
-						run_function(&mut output_buf, &mut function, &mut parameter, front_matter, html_content, markdown_file_path, template_file_path, root_input_dir);
+						run_function(&mut output_buf, &mut function, &mut parameter, front_matter, html_content, template_file_path, root_input_dir);
 						state = State::TagEnd
 					}
 					State::ValueStart | State::ValueEnd | State::TagStart | State::TagEnd => {}
@@ -380,7 +428,7 @@ fn write_html_page(
 					State::JustHtml => {
 						match byte {
 							b'{' => state = State::LastOpenBracket,
-							_ => write_to_output(output_buf, &[byte])
+							_ => write_to_stream(&[byte], output_buf)
 						}
 					}
 					State::LastOpenBracket => {
@@ -388,7 +436,7 @@ fn write_html_page(
 							b'{' =>	state = State::ValueStart,
 							b'%' => state = State::TagStart,
 							_ => {
-								write_to_output(output_buf, &[b'{']);
+								write_to_stream(&[b'{'], output_buf);
 								state = State::JustHtml;
 							}
 						}
@@ -447,7 +495,7 @@ fn write_html_page(
 						match byte {
 							b' ' | b'\t' => {
 								if !parameter.is_empty() {
-									run_function(&mut output_buf, &mut function, &mut parameter, front_matter, html_content, markdown_file_path, template_file_path, root_input_dir);
+									run_function(&mut output_buf, &mut function, &mut parameter, front_matter, html_content, template_file_path, root_input_dir);
 									state = State::TagEnd;
 								}
 							}
@@ -548,18 +596,12 @@ fn compute_template_path(
 	}
 }
 
-fn write_to_output(output_buf: &mut BufWriter<&mut Vec<u8>>, data: &[u8]) {
-	output_buf.write_all(data).unwrap_or_else(|e| {
-		panic!("Failed writing \"{:?}\" to to buffer: {}.", data, e)
-	});
-}
-
 fn output_template_value(
-	mut output_buf: &mut BufWriter<&mut Vec<u8>>,
+	mut output_buf: &mut BufWriter<Vec<u8>>,
 	object: &mut Vec<u8>,
 	field: &mut Vec<u8>,
 	front_matter: &FrontMatter,
-	html_content: &str,
+	html_content: Option<&str>,
 ) {
 	if object.is_empty() {
 		panic!("Empty object name.")
@@ -575,24 +617,30 @@ fn output_template_value(
 
 	let field_str = String::from_utf8_lossy(field);
 	match field_str.borrow() {
-		"content" => write_to_output(&mut output_buf, html_content.as_bytes()),
+		"content" => {
+			if let Some(content) = html_content {
+				write_to_stream(content.as_bytes(), &mut output_buf)
+			} else {
+				panic!("Requested content but none exists")
+			}
+		}
 		"date" => {
-			write_to_output(&mut output_buf, front_matter.date.as_bytes())
+			write_to_stream(front_matter.date.as_bytes(), &mut output_buf)
 		}
 		"title" => {
-			write_to_output(&mut output_buf, front_matter.title.as_bytes())
+			write_to_stream(front_matter.title.as_bytes(), &mut output_buf)
 		}
-		"published" => write_to_output(
-			&mut output_buf,
+		"published" => write_to_stream(
 			if front_matter.published {
 				b"true"
 			} else {
 				b"false"
 			},
+			&mut output_buf,
 		),
 		"edited" => {
 			if let Some(edited) = &front_matter.edited {
-				write_to_output(&mut output_buf, edited.as_bytes())
+				write_to_stream(edited.as_bytes(), &mut output_buf)
 			}
 		}
 		// TODO: categories
@@ -601,7 +649,7 @@ fn output_template_value(
 		_ => {
 			if let Some(value) = front_matter.custom_attributes.get(&*field_str)
 			{
-				write_to_output(&mut output_buf, value.as_bytes())
+				write_to_stream(value.as_bytes(), &mut output_buf)
 			} else {
 				panic!("Not yet supported field: {}.{}", object_str, field_str)
 			}
@@ -612,12 +660,11 @@ fn output_template_value(
 }
 
 fn run_function(
-	mut output_buf: &mut BufWriter<&mut Vec<u8>>,
+	mut output_buf: &mut BufWriter<Vec<u8>>,
 	function: &mut Vec<u8>,
 	parameter: &mut Vec<u8>,
 	front_matter: &FrontMatter,
-	html_content: &str,
-	markdown_file_path: &PathBuf,
+	html_content: Option<&str>,
 	template_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 ) {
@@ -632,30 +679,33 @@ fn run_function(
 	let parameter_str = String::from_utf8_lossy(parameter);
 	match function_str.borrow() {
 		"include" => {
-			let included_file =
+			let included_file_path =
 				root_input_dir.join("_includes").join(&*parameter_str);
 
-			if included_file.exists() {
-				println!(
-					"Including {} into {}.",
-					included_file.display(),
-					template_file_path.display()
-				);
-				write_html_page(
-					&mut output_buf,
-					front_matter,
-					html_content,
-					markdown_file_path,
-					&included_file,
-					root_input_dir,
-				)
-			} else {
-				panic!(
-					"Attempt to include non-existent file {} into file {}.",
-					included_file.display(),
-					template_file_path.display()
-				)
-			}
+			let mut included_file = BufReader::new(
+				fs::File::open(&included_file_path).unwrap_or_else(|e| {
+					panic!(
+						"Failed opening \"{}\": {}.",
+						&included_file_path.display(),
+						e
+					)
+				}),
+			);
+
+			println!(
+				"Including {} into {}.",
+				included_file_path.display(),
+				template_file_path.display()
+			);
+
+			write_html_page(
+				&mut output_buf,
+				front_matter,
+				html_content,
+				&included_file_path,
+				&mut included_file,
+				root_input_dir,
+			)
 		}
 		_ => panic!("Unsupported function: {}", function_str),
 	}

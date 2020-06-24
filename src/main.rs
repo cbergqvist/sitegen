@@ -19,7 +19,7 @@ mod markdown;
 mod util;
 mod websocket;
 
-use util::{write, Refresh};
+use util::{write_to_stream_log_count, Refresh};
 
 struct BoolArg {
 	name: &'static str,
@@ -299,6 +299,15 @@ fn inner_main(config: &Config) {
 			)
 		});
 
+		for file_name in &files.html {
+			let path = markdown::process_template_file_without_markdown(
+				file_name,
+				&config.input_dir,
+				&config.output_dir,
+			);
+			output_files.push(path)
+		}
+
 		let mut groups = HashMap::new();
 		for file_name in &files.markdown {
 			let generated = markdown::process_file(
@@ -558,9 +567,13 @@ fn get_path_to_refresh(
 
 			// Special identifier making JavaScript reload the current page.
 			return Some(PathBuf::from("*"));
+		} else {
+			return Some(markdown::process_template_file_without_markdown(
+				&path, input_dir, output_dir,
+			));
 		}
 	} else if path.extension() == Some(css_extension) {
-		util::copy_files_with_prefix(&[path], &input_dir, &output_dir);
+		util::copy_files_with_prefix(&[path], input_dir, output_dir);
 
 		// Special identifier making JavaScript reload the current page.
 		return Some(PathBuf::from("*"));
@@ -645,56 +658,7 @@ fn handle_write(
 		util::CSS_EXTENSION,
 		util::XML_EXTENSION,
 	];
-	let mut full_path = root_dir.join(&path);
-	if !full_path.is_file() {
-		let with_index = full_path.join("index.html");
-		if with_index.is_file() {
-			full_path = with_index;
-		}
-	}
-	if full_path.is_file() {
-		println!("Opening: {}", full_path.display());
-		match fs::File::open(&full_path) {
-			Ok(mut input_file) => {
-				write(b"HTTP/1.1 200 OK\r\n", &mut stream);
-				if let Some(extension) = path.extension() {
-					let extension = extension.to_string_lossy();
-					if TEXT_OUTPUT_EXTENSIONS.iter().any(|&ext| ext == extension) {
-						write(format!("Content-Type: text/{}; charset=UTF-8\r\n\r\n", extension).as_bytes(), &mut stream);
-						let mut buf = [0_u8; 64 * 1024];
-						loop {
-							let size =
-								input_file.read(&mut buf).unwrap_or_else(|e| {
-									panic!(
-										"Failed reading from {}: {}",
-										full_path.display(),
-										e
-									);
-								});
-							if size < 1 {
-								break;
-							}
-
-							write(&buf[0..size], &mut stream);
-						}
-					}
-				}
-			}
-			Err(e) => {
-				match e.kind() {
-					ErrorKind::NotFound => write(
-						format!("HTTP/1.1 404 Not found\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>Couldn't find: {}</body></html>\r\n", full_path.display()).as_bytes(),
-						&mut stream,
-					),
-					_ => write(
-						format!("HTTP/1.1 500 Error\r\n{}", e)
-							.as_bytes(),
-						&mut stream,
-					),
-				}
-			}
-		}
-	} else if path.to_string_lossy() == "dev" {
+	if path.to_string_lossy() == "dev" {
 		println!("Requested path is not a file, returning index.");
 		let iframe_src = if let Some(path) = start_file {
 			let mut s = String::from(" src=\"");
@@ -705,7 +669,7 @@ fn handle_write(
 			String::from("")
 		};
 
-		write(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html>
+		write_to_stream_log_count(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html>
 <head><script>
 // Tag on time in order to distinguish different sockets.
 let socket = new WebSocket(\"ws://\" + window.location.hostname + \":\" + window.location.port + \"/chat?now=\" + Date.now())
@@ -739,10 +703,63 @@ BODY {{
 </body>
 </html>\r\n", iframe_src).as_bytes(), &mut stream);
 	} else {
-		write(
-			format!("HTTP/1.1 404 Not found\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>Couldn't find: {}</body></html>\r\n", full_path.display()).as_bytes(),
-			&mut stream,
-		)
+		let mut full_path = root_dir.join(&path);
+		if !full_path.is_file() {
+			let with_index = full_path.join("index.html");
+			if with_index.is_file() {
+				full_path = with_index;
+			}
+		}
+		println!("Attempting to open: {}", full_path.display());
+		match fs::File::open(&full_path) {
+			Ok(mut input_file) => {
+				if let Some(extension) = full_path.extension() {
+					let extension = extension.to_string_lossy();
+					if TEXT_OUTPUT_EXTENSIONS.iter().any(|&ext| ext == extension) {
+						write_to_stream_log_count(format!("HTTP/1.1 200 OK\r\nContent-Type: text/{}; charset=UTF-8\r\n\r\n", extension).as_bytes(), &mut stream);
+						let mut buf = [0_u8; 64 * 1024];
+						loop {
+							let size =
+								input_file.read(&mut buf).unwrap_or_else(|e| {
+									panic!(
+										"Failed reading from {}: {}",
+										full_path.display(),
+										e
+									);
+								});
+							if size < 1 {
+								break;
+							}
+
+							write_to_stream_log_count(&buf[0..size], &mut stream);
+						}
+					} else {
+						write_to_stream_log_count(
+							format!("HTTP/1.1 500 Error\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>Unrecognized extension: {}</body></html>\r\n", full_path.display()).as_bytes(),
+							&mut stream,
+						)
+					}
+				} else {
+						write_to_stream_log_count(
+							format!("HTTP/1.1 500 Error\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>Missing extension: {}</body></html>\r\n", full_path.display()).as_bytes(),
+							&mut stream,
+						)
+				}
+			}
+			Err(e) => {
+				match e.kind() {
+					ErrorKind::NotFound => write_to_stream_log_count(
+						format!("HTTP/1.1 404 Not found\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>Couldn't find: {}</body></html>\r\n", full_path.display()).as_bytes(),
+						&mut stream,
+					),
+					_ => write_to_stream_log_count(
+						format!("HTTP/1.1 500 Error\r\n{}", e)
+							.as_bytes(),
+						&mut stream,
+					)
+				}
+			}
+		}
 	}
 }
 

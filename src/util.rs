@@ -12,11 +12,15 @@ pub struct Refresh {
 	pub file: Option<PathBuf>,
 }
 
-pub fn write<T: Write>(bytes: &[u8], stream: &mut T) {
-	match stream.write_all(bytes) {
-		Ok(()) => println!("Wrote {} bytes.", bytes.len()),
-		Err(e) => println!("WARNING: Failed sending response: {}", e),
-	}
+pub fn write_to_stream<T: Write>(buffer: &[u8], stream: &mut T) {
+	stream.write_all(buffer).unwrap_or_else(|e| {
+		panic!("Failed writing \"{:?}\" to to buffer: {}.", buffer, e)
+	});
+}
+
+pub fn write_to_stream_log_count<T: Write>(buffer: &[u8], stream: &mut T) {
+	write_to_stream(buffer, stream);
+	println!("Wrote {} bytes.", buffer.len());
 }
 
 pub fn copy_files_with_prefix(

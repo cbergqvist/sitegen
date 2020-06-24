@@ -5,7 +5,7 @@ use std::num::NonZeroU16;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use crate::util::{write, Refresh};
+use crate::util::{write_to_stream_log_count, Refresh};
 
 // Based on WebSocket RFC - https://tools.ietf.org/html/rfc6455
 const FINAL_FRAGMENT: u8 = 0b1000_0000;
@@ -49,7 +49,7 @@ pub fn handle_stream(
 	m.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
 	let accept_value = base64::encode(m.digest().bytes());
 
-	write(format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\nSec-WebSocket-Protocol: chat\r\n\r\n", accept_value).as_bytes(), &mut stream);
+	write_to_stream_log_count(format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\nSec-WebSocket-Protocol: chat\r\n\r\n", accept_value).as_bytes(), &mut stream);
 
 	stream.set_nonblocking(true).expect(
 		"Failed changing WebSocket TCP connection to nonblocking mode.",
@@ -96,8 +96,8 @@ pub fn handle_stream(
 
 			let header =
 				[FINAL_FRAGMENT | BINARY_MESSAGE_OPCODE, changed_file_len];
-			write(&header, &mut stream);
-			write(changed_file.as_bytes(), &mut stream);
+			write_to_stream_log_count(&header, &mut stream);
+			write_to_stream_log_count(changed_file.as_bytes(), &mut stream);
 		}
 	}
 }
@@ -257,7 +257,7 @@ fn handle_frame(
 			} else {
 				return_frame.push(0);
 			};
-			write(&return_frame, &mut stream);
+			write_to_stream_log_count(&return_frame, &mut stream);
 
 			ReadState::Close
 		}
@@ -272,8 +272,8 @@ fn handle_frame(
 					panic!("Unexpected payload size ({}): {}", payload.len(), e)
 				}),
 			];
-			write(&header, &mut stream);
-			write(payload, &mut stream);
+			write_to_stream_log_count(&header, &mut stream);
+			write_to_stream_log_count(payload, &mut stream);
 
 			ReadState::None
 		}

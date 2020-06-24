@@ -4,7 +4,7 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 use crate::front_matter;
-use crate::util::write;
+use crate::util::write_to_stream;
 
 pub struct FeedHeader {
 	pub title: String,
@@ -51,7 +51,7 @@ pub fn generate(
 			})
 			.to_string_lossy(),
 	);
-	write(
+	write_to_stream(
 		format!(
 			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <feed xmlns=\"http://www.w3.org/2005/Atom\">
@@ -79,7 +79,7 @@ pub fn generate(
 	for entry in entries {
 		let entry_url =
 			complete_url(&header.base_url, &entry.permalink.to_string_lossy());
-		write(
+		write_to_stream(
 			format!(
 				"	<entry>
 		<title>{}</title>
@@ -108,7 +108,7 @@ pub fn generate(
 		);
 	}
 
-	write(b"</feed>", &mut output);
+	write_to_stream(b"</feed>", &mut output);
 
 	feed.write_all(output.buffer()).unwrap_or_else(|e| {
 		panic!("Failed writing to \"{}\": {}.", &file_name.display(), e)
