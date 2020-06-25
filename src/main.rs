@@ -282,11 +282,10 @@ Arguments:"
 }
 
 fn inner_main(config: &Config) {
-	let mut file_mappings = HashMap::new();
+	let input_files = markdown::get_files(&config.input_dir);
+	let mut input_output_map = HashMap::new();
 
-	let files = markdown::get_files(&config.input_dir);
-
-	if files.is_empty() {
+	if input_files.is_empty() {
 		println!(
 			"Found no valid file entries under \"{}\".",
 			config.input_dir.display()
@@ -300,21 +299,60 @@ fn inner_main(config: &Config) {
 			)
 		});
 
-		for file_name in &files.html {
-			let path = markdown::process_template_file_without_markdown(
+		// First, build up the input -> output map so that later when we do
+		// actual processing of files, we have records of all other files.
+		// This allows us to properly detect broken links.
+		for file_name in &input_files.html {
+			let output_file_path = markdown::compute_output_path(
 				file_name,
 				&config.input_dir,
 				&config.output_dir,
 			);
-			checked_insert(file_name.clone(), path, &mut file_mappings)
+			checked_insert(
+				file_name.clone(),
+				output_file_path,
+				&mut input_output_map,
+			)
+		}
+		for file_name in &input_files.markdown {
+			let output_file_path = markdown::compute_output_path(
+				file_name,
+				&config.input_dir,
+				&config.output_dir,
+			);
+			checked_insert(
+				file_name.clone(),
+				output_file_path,
+				&mut input_output_map,
+			)
+		}
+		for file_name in &input_files.raw {
+			let output_file_path = config
+				.output_dir
+				.join(file_name.strip_prefix(&config.input_dir).unwrap());
+			checked_insert(
+				file_name.clone(),
+				output_file_path,
+				&mut input_output_map,
+			)
+		}
+
+		for file_name in &input_files.html {
+			let _path = markdown::process_template_file_without_markdown(
+				file_name,
+				&config.input_dir,
+				&config.output_dir,
+				&mut input_output_map,
+			);
 		}
 
 		let mut groups = HashMap::new();
-		for file_name in &files.markdown {
+		for file_name in &input_files.markdown {
 			let generated = markdown::process_file(
 				file_name,
 				&config.input_dir,
 				&config.output_dir,
+				&mut input_output_map,
 			);
 			if let Some(group) = generated.group {
 				let entries = groups.entry(group).or_insert_with(Vec::new);
@@ -324,11 +362,6 @@ fn inner_main(config: &Config) {
 					permalink: generated.path.clone(),
 				});
 			}
-			checked_insert(
-				file_name.clone(),
-				generated.path,
-				&mut file_mappings,
-			)
 		}
 
 		for (group, entries) in groups {
@@ -345,7 +378,7 @@ fn inner_main(config: &Config) {
 		}
 
 		util::copy_files_with_prefix(
-			&files.raw,
+			&input_files.raw,
 			&config.input_dir,
 			&config.output_dir,
 		)
@@ -365,9 +398,9 @@ fn inner_main(config: &Config) {
 
 	let root_dir = PathBuf::from(&config.output_dir);
 	let fs_cond_clone = fs_cond.clone();
-	let start_file = find_newest_file(&file_mappings);
+	let start_file = find_newest_file(&input_output_map);
 
-	let listening_thread = spawn_listening_thread(
+	spawn_listening_thread(
 		&config.host,
 		config.port,
 		root_dir,
@@ -377,12 +410,12 @@ fn inner_main(config: &Config) {
 
 	// As we start watching some time after we've done initial processing, it is
 	// possible that files get modified in between and changes get lost.
-	watch_fs(&config.input_dir, &config.output_dir, &fs_cond_clone);
-
-	// We never really get here as we loop infinitely until Ctrl+C.
-	listening_thread
-		.join()
-		.expect("Failed joining listening thread.");
+	watch_fs(
+		&config.input_dir,
+		&config.output_dir,
+		&fs_cond_clone,
+		&mut input_output_map,
+	);
 }
 
 fn checked_insert(
@@ -404,11 +437,11 @@ fn checked_insert(
 }
 
 fn find_newest_file(
-	file_mappings: &HashMap<PathBuf, PathBuf>,
+	input_output_map: &HashMap<PathBuf, PathBuf>,
 ) -> Option<PathBuf> {
 	let mut newest_file = None;
 	let mut newest_time = std::time::UNIX_EPOCH;
-	for (input_file, output_file) in file_mappings {
+	for (input_file, output_file) in input_output_map {
 		let metadata = fs::metadata(input_file).unwrap_or_else(|e| {
 			panic!(
 				"Failed fetching metadata for {}: {}",
@@ -492,7 +525,8 @@ fn watch_fs(
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
 	fs_cond: &Arc<(Mutex<Refresh>, Condvar)>,
-) {
+	mut input_output_map: &mut HashMap<PathBuf, PathBuf>,
+) -> ! {
 	let (tx, rx) = channel();
 	let mut watcher =
 		watcher(tx, Duration::from_millis(200)).unwrap_or_else(|e| {
@@ -512,8 +546,12 @@ fn watch_fs(
 				match event {
 					notify::DebouncedEvent::Write(path)
 					| notify::DebouncedEvent::Create(path) => {
-						let path_to_communicate =
-							get_path_to_refresh(path, input_dir, output_dir);
+						let path_to_communicate = get_path_to_refresh(
+							&path,
+							input_dir,
+							output_dir,
+							&mut input_output_map,
+						);
 						println!(
 							"Path to communicate: {:?}",
 							path_to_communicate
@@ -541,18 +579,24 @@ fn watch_fs(
 }
 
 fn get_path_to_refresh(
-	mut path: PathBuf,
+	input_file_path: &PathBuf,
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
+	input_output_map: &mut HashMap<PathBuf, PathBuf>,
 ) -> Option<PathBuf> {
 	let css_extension = OsStr::new(util::CSS_EXTENSION);
 	let html_extension = OsStr::new(util::HTML_EXTENSION);
 	let markdown_extension = OsStr::new(util::MARKDOWN_EXTENSION);
 
-	path = path.canonicalize().unwrap_or_else(|e| {
-		panic!("Canonicalization of {} failed: {}", path.display(), e)
-	});
-	if path.extension() == Some(markdown_extension) {
+	let canonical_input_path =
+		input_file_path.canonicalize().unwrap_or_else(|e| {
+			panic!(
+				"Canonicalization of {} failed: {}",
+				input_file_path.display(),
+				e
+			)
+		});
+	if canonical_input_path.extension() == Some(markdown_extension) {
 		match fs::create_dir(&output_dir) {
 			Ok(_) => {}
 			Err(e) => {
@@ -566,19 +610,34 @@ fn get_path_to_refresh(
 			}
 		}
 
-		return Some(markdown::process_file(&path, input_dir, output_dir).path);
-	} else if path.extension() == Some(html_extension) {
-		let parent_path = path.parent().unwrap_or_else(|| {
-			panic!("Path without a parent directory?: {}", path.display())
+		return Some(
+			markdown::process_file(
+				&canonical_input_path,
+				input_dir,
+				output_dir,
+				input_output_map,
+			)
+			.path,
+		);
+	} else if canonical_input_path.extension() == Some(html_extension) {
+		let parent_path = canonical_input_path.parent().unwrap_or_else(|| {
+			panic!(
+				"Path without a parent directory?: {}",
+				canonical_input_path.display()
+			)
 		});
 		let parent_path_file_name =
 			parent_path.file_name().unwrap_or_else(|| {
 				panic!("Missing file name in path: {}", parent_path.display())
 			});
 		if parent_path_file_name == "_layouts" {
-			let template_file_stem = path.file_stem().unwrap_or_else(|| {
-				panic!("Missing file stem in path: {}", path.display())
-			});
+			let template_file_stem =
+				canonical_input_path.file_stem().unwrap_or_else(|| {
+					panic!(
+						"Missing file stem in path: {}",
+						canonical_input_path.display()
+					)
+				});
 			let mut dir_name = OsString::from(template_file_stem);
 			dir_name.push("s");
 			let markdown_dir = input_dir.join(dir_name);
@@ -602,6 +661,7 @@ fn get_path_to_refresh(
 							&templated_file,
 							input_dir,
 							output_dir,
+							input_output_map,
 						)
 						.path,
 					);
@@ -610,7 +670,10 @@ fn get_path_to_refresh(
 				let mut output_files = Vec::new();
 				for file_name in &files.markdown {
 					output_files.push(markdown::process_file(
-						file_name, input_dir, output_dir,
+						file_name,
+						input_dir,
+						output_dir,
+						input_output_map,
 					))
 				}
 
@@ -620,19 +683,31 @@ fn get_path_to_refresh(
 			// Since we don't track what includes what, just do a full refresh.
 			let files = markdown::get_files(input_dir);
 			for file_name in &files.markdown {
-				markdown::process_file(file_name, input_dir, output_dir);
+				markdown::process_file(
+					file_name,
+					input_dir,
+					output_dir,
+					input_output_map,
+				);
 			}
 
 			// Special identifier making JavaScript reload the current page.
 			return Some(PathBuf::from("*"));
 		} else {
 			return Some(markdown::process_template_file_without_markdown(
-				&path, input_dir, output_dir,
+				&canonical_input_path,
+				input_dir,
+				output_dir,
+				input_output_map,
 			));
 		}
-	} else if path.extension() == Some(css_extension) {
-		util::copy_files_with_prefix(&[path], input_dir, output_dir);
-
+	} else if canonical_input_path.extension() == Some(css_extension) {
+		util::copy_files_with_prefix(
+			&[canonical_input_path],
+			input_dir,
+			output_dir,
+		);
+		// TODO: input_output_map
 		// Special identifier making JavaScript reload the current page.
 		return Some(PathBuf::from("*"));
 	}

@@ -1,4 +1,5 @@
 use std::borrow::Borrow;
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -143,8 +144,10 @@ pub fn process_file(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
+	input_output_map: &mut HashMap<PathBuf, PathBuf>,
 ) -> GeneratedFile {
 	let timer = Instant::now();
+
 	let mut input_file =
 		BufReader::new(fs::File::open(&input_file_path).unwrap_or_else(|e| {
 			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
@@ -181,17 +184,29 @@ pub fn process_file(
 		}),
 	);
 
+	// TODO: Inserting different format?
+	let output_file_path = input_output_map
+		.entry(input_file_path.clone())
+		.or_insert_with(|| {
+			compute_output_path(
+				input_file_path,
+				root_input_dir,
+				root_output_dir,
+			)
+		})
+		.clone();
+
 	write_html_page(
+		&output_file_path,
 		&mut output_buf,
 		&front_matter,
 		Some(&html_content),
 		&template_path_result.path,
 		&mut template_file,
 		root_input_dir,
+		root_output_dir,
+		input_output_map,
 	);
-
-	let output_file_path =
-		compute_output_path(input_file_path, root_input_dir, root_output_dir);
 
 	write_buffer_to_file(output_buf.buffer(), &output_file_path);
 
@@ -225,8 +240,10 @@ pub fn process_template_file_without_markdown(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
+	input_output_map: &mut HashMap<PathBuf, PathBuf>,
 ) -> PathBuf {
 	let timer = Instant::now();
+
 	let mut input_file =
 		BufReader::new(fs::File::open(&input_file_path).unwrap_or_else(|e| {
 			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
@@ -235,18 +252,30 @@ pub fn process_template_file_without_markdown(
 	let front_matter =
 		crate::front_matter::parse(input_file_path, &mut input_file);
 
-	let output_file_path =
-		compute_output_path(input_file_path, root_input_dir, root_output_dir);
-
 	let mut output_buf = BufWriter::new(Vec::new());
 
+	// TODO: Inserting different format?
+	let output_file_path = input_output_map
+		.entry(input_file_path.clone())
+		.or_insert_with(|| {
+			compute_output_path(
+				input_file_path,
+				root_input_dir,
+				root_output_dir,
+			)
+		})
+		.clone();
+
 	write_html_page(
+		&output_file_path,
 		&mut output_buf,
 		&front_matter,
 		None,
 		input_file_path,
 		&mut input_file,
 		root_input_dir,
+		root_output_dir,
+		input_output_map,
 	);
 
 	write_buffer_to_file(output_buf.buffer(), &output_file_path);
@@ -299,7 +328,7 @@ fn write_buffer_to_file(buffer: &[u8], path: &PathBuf) {
 	});
 }
 
-fn compute_output_path(
+pub fn compute_output_path(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
@@ -359,12 +388,15 @@ fn compute_output_path(
 // Allowing more lines to keep state machine cohesive.
 #[allow(clippy::too_many_lines)]
 fn write_html_page(
+	output_file_path: &PathBuf,
 	mut output_buf: &mut BufWriter<Vec<u8>>,
 	front_matter: &FrontMatter,
 	html_content: Option<&str>,
 	template_file_path: &PathBuf,
 	template_file: &mut BufReader<fs::File>,
 	root_input_dir: &PathBuf,
+	root_output_dir: &PathBuf,
+	input_output_map: &HashMap<PathBuf, PathBuf>,
 ) {
 	enum State {
 		JustHtml,
@@ -416,7 +448,7 @@ fn write_html_page(
 					State::WaitingForCloseBracket => panic!("Expected close bracket but got newline at {}:{}:{}.", template_file_path.display(), line_number, column_number),
 					State::TagFunction => panic!("Unexpected newline in the middle of function at {}:{}:{}.", template_file_path.display(), line_number, column_number),
 					State::TagParameter => {
-						run_function(&mut output_buf, &mut function, &mut parameter, front_matter, html_content, template_file_path, root_input_dir);
+						run_function(output_file_path, &mut output_buf, &mut function, &mut parameter, front_matter, html_content, template_file_path, root_input_dir, root_output_dir, input_output_map);
 						state = State::TagEnd
 					}
 					State::ValueStart | State::ValueEnd | State::TagStart | State::TagEnd => {}
@@ -495,7 +527,7 @@ fn write_html_page(
 						match byte {
 							b' ' | b'\t' => {
 								if !parameter.is_empty() {
-									run_function(&mut output_buf, &mut function, &mut parameter, front_matter, html_content, template_file_path, root_input_dir);
+									run_function(output_file_path, &mut output_buf, &mut function, &mut parameter, front_matter, html_content, template_file_path, root_input_dir, root_output_dir, input_output_map);
 									state = State::TagEnd;
 								}
 							}
@@ -660,6 +692,7 @@ fn output_template_value(
 }
 
 fn run_function(
+	output_file_path: &PathBuf,
 	mut output_buf: &mut BufWriter<Vec<u8>>,
 	function: &mut Vec<u8>,
 	parameter: &mut Vec<u8>,
@@ -667,6 +700,8 @@ fn run_function(
 	html_content: Option<&str>,
 	template_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
+	root_output_dir: &PathBuf,
+	input_output_map: &HashMap<PathBuf, PathBuf>,
 ) {
 	if function.is_empty() {
 		panic!("Empty function name.")
@@ -678,37 +713,151 @@ fn run_function(
 	let function_str = String::from_utf8_lossy(function);
 	let parameter_str = String::from_utf8_lossy(parameter);
 	match function_str.borrow() {
-		"include" => {
-			let included_file_path =
-				root_input_dir.join("_includes").join(&*parameter_str);
-
-			let mut included_file = BufReader::new(
-				fs::File::open(&included_file_path).unwrap_or_else(|e| {
-					panic!(
-						"Failed opening \"{}\": {}.",
-						&included_file_path.display(),
-						e
-					)
-				}),
-			);
-
-			println!(
-				"Including {} into {}.",
-				included_file_path.display(),
-				template_file_path.display()
-			);
-
-			write_html_page(
-				&mut output_buf,
-				front_matter,
-				html_content,
-				&included_file_path,
-				&mut included_file,
-				root_input_dir,
-			)
-		}
+		"include" => include_file(
+			output_file_path,
+			&mut output_buf,
+			&parameter_str,
+			front_matter,
+			html_content,
+			template_file_path,
+			root_input_dir,
+			root_output_dir,
+			input_output_map,
+		),
+		"link" => check_and_emit_link(
+			output_file_path,
+			&mut output_buf,
+			&parameter_str,
+			root_input_dir,
+			root_output_dir,
+			input_output_map,
+		),
 		_ => panic!("Unsupported function: {}", function_str),
 	}
 	function.clear();
 	parameter.clear();
+}
+
+fn include_file(
+	output_file_path: &PathBuf,
+	mut output_buf: &mut BufWriter<Vec<u8>>,
+	parameter_str: &str,
+	front_matter: &FrontMatter,
+	html_content: Option<&str>,
+	template_file_path: &PathBuf,
+	root_input_dir: &PathBuf,
+	root_output_dir: &PathBuf,
+	input_output_map: &HashMap<PathBuf, PathBuf>,
+) {
+	let included_file_path =
+		root_input_dir.join("_includes").join(&*parameter_str);
+
+	let mut included_file = BufReader::new(
+		fs::File::open(&included_file_path).unwrap_or_else(|e| {
+			panic!(
+				"Failed opening \"{}\": {}.",
+				&included_file_path.display(),
+				e
+			)
+		}),
+	);
+
+	println!(
+		"Including {} into {}.",
+		included_file_path.display(),
+		template_file_path.display()
+	);
+
+	write_html_page(
+		output_file_path,
+		&mut output_buf,
+		front_matter,
+		html_content,
+		&included_file_path,
+		&mut included_file,
+		root_input_dir,
+		root_output_dir,
+		input_output_map,
+	)
+}
+
+fn check_and_emit_link(
+	output_file_path: &PathBuf,
+	output_buf: &mut BufWriter<Vec<u8>>,
+	parameter_str: &str,
+	root_input_dir: &PathBuf,
+	root_output_dir: &PathBuf,
+	input_output_map: &HashMap<PathBuf, PathBuf>,
+) {
+	let append_index_html = parameter_str.ends_with('/');
+	if !parameter_str.starts_with('/') {
+		panic!(
+			"Only absolute paths are allowed in links, but got: {}",
+			parameter_str
+		);
+	}
+	let mut path = root_input_dir.join(PathBuf::from(&parameter_str[1..]));
+	if append_index_html {
+		path = path.join(PathBuf::from("index.html"));
+	}
+	if let Some(linked_output_path) = input_output_map.get(&path) {
+		let mut equal_prefix = PathBuf::new();
+		for (self_component, link_component) in output_file_path
+			.components()
+			.zip(linked_output_path.components())
+		{
+			if self_component != link_component {
+				break;
+			}
+			equal_prefix = equal_prefix.join(self_component);
+		}
+		if equal_prefix.iter().next() == None {
+			panic!("No common prefix, expected at least {} but own path is {} and link is {}.", root_output_dir.display(), output_file_path.display(), linked_output_path.display());
+		}
+
+		// Do not strip own file name from link if path is the same.
+		if output_file_path == linked_output_path {
+			equal_prefix.pop();
+		}
+
+		let own_component_count = output_file_path.components().count();
+		let linked_component_count = linked_output_path.components().count();
+		let mut base = PathBuf::new();
+		if own_component_count > linked_component_count {
+			for _i in 0..(own_component_count - linked_component_count) {
+				base = base.join("../");
+			}
+		} else {
+			base = PathBuf::from("./");
+		}
+
+		let mut prefix_plus_slash = equal_prefix.to_string_lossy().to_string();
+		prefix_plus_slash.push('/');
+		let mut linked_output_path_stripped = base
+			.join(linked_output_path.strip_prefix(&prefix_plus_slash).unwrap());
+
+		let mut append_trailing_slash = false;
+		if linked_output_path_stripped.file_name()
+			== Some(OsStr::new("index.html"))
+		{
+			linked_output_path_stripped.pop();
+			append_trailing_slash = true;
+		}
+
+		let mut linked_output_path_stripped_str =
+			linked_output_path_stripped.to_string_lossy().to_string();
+		if append_trailing_slash {
+			linked_output_path_stripped_str.push('/');
+		}
+
+		println!("File: {}, original link: {}, translated: {}, prefix+slash: {}, result: {}", output_file_path.display(), parameter_str, linked_output_path.display(), prefix_plus_slash, &linked_output_path_stripped_str);
+
+		write_to_stream(linked_output_path_stripped_str.as_bytes(), output_buf);
+	} else {
+		panic!(
+			"Failed finding {} among: {:#?}",
+			path.display(),
+			input_output_map.keys()
+		);
+	}
 }
