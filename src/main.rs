@@ -329,9 +329,18 @@ fn inner_main(config: &Config) {
 			)
 		}
 		for file_name in &input_files.raw {
-			let output_file_path = config
-				.output_dir
-				.join(file_name.strip_prefix(&config.input_dir).unwrap());
+			let output_file_path = config.output_dir.join(
+				file_name
+					.strip_prefix(&config.input_dir)
+					.unwrap_or_else(|e| {
+						panic!(
+							"Failed stripping prefix {} from {}: {}",
+							config.input_dir.display(),
+							file_name.display(),
+							e
+						)
+					}),
+			);
 			checked_insert(
 				file_name.clone(),
 				ComputedFilePath {
@@ -1018,7 +1027,18 @@ fn write_sitemap_xml(
 			continue;
 		}
 
-		let path = output_file.path.strip_prefix(output_dir).unwrap();
+		let path =
+			output_file
+				.path
+				.strip_prefix(output_dir)
+				.unwrap_or_else(|e| {
+					panic!(
+						"Failed stripping prefix {} from {}: {}",
+						output_dir.display(),
+						output_file.path.display(),
+						e
+					)
+				});
 		let mut output_url = base_url.clone();
 		if path.file_name() == Some(OsStr::new("index.html")) {
 			output_url.push_str(&path.with_file_name("").to_string_lossy())
@@ -1026,6 +1046,7 @@ fn write_sitemap_xml(
 			output_url.push_str(&path.to_string_lossy())
 		}
 
+		// TODO: Should add <lastmod/> based on front matter date/edited.
 		write_to_stream(
 			format!(
 				"	<url>

@@ -388,7 +388,12 @@ pub fn compute_output_path(
 			panic!("Failed to get parent from: {}", input_file_path.display())
 		})
 		.file_stem()
-		.unwrap()
+		.unwrap_or_else(|| {
+			panic!(
+				"Expected file stem on parent of: {}",
+				input_file_path.display()
+			)
+		})
 		.to_string_lossy();
 	if input_file_parent.ends_with('s') {
 		group = Some(input_file_parent.to_string());
@@ -854,8 +859,19 @@ fn check_and_emit_link(
 
 		let mut prefix_plus_slash = equal_prefix.to_string_lossy().to_string();
 		prefix_plus_slash.push('/');
-		let mut linked_output_path_stripped = base
-			.join(linked_output.path.strip_prefix(&prefix_plus_slash).unwrap());
+		let mut linked_output_path_stripped = base.join(
+			linked_output
+				.path
+				.strip_prefix(&prefix_plus_slash)
+				.unwrap_or_else(|e| {
+					panic!(
+						"Failed stripping prefix {} from {}: {}",
+						prefix_plus_slash,
+						linked_output.path.display(),
+						e
+					)
+				}),
+		);
 
 		let mut append_trailing_slash = false;
 		if linked_output_path_stripped.file_name()
