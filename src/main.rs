@@ -420,7 +420,9 @@ fn inner_main(config: &Config) {
 			&input_files.raw,
 			&config.input_dir,
 			&config.output_dir,
-		)
+		);
+
+		write_robots_txt(&config.output_dir)
 	}
 
 	if !config.watch {
@@ -960,4 +962,30 @@ fn handle_client(
 			}
 		}
 	}
+}
+
+fn write_robots_txt(output_dir: &PathBuf) {
+	let robots_file_name = output_dir.join(PathBuf::from("robots.txt"));
+	let mut robots_file =
+		fs::File::create(&robots_file_name).unwrap_or_else(|e| {
+			panic!("Failed creating {}: {}", robots_file_name.display(), e)
+		});
+	robots_file
+		.write_all(
+			b"User-agent: *
+Allow: /
+",
+		)
+		.unwrap_or_else(|e| {
+			panic!("Failed writing to {}: {}", robots_file_name.display(), e)
+		});
+	// Avoiding sync_all() for now to be friendlier to disks.
+	robots_file.sync_data().unwrap_or_else(|e| {
+		panic!(
+			"Failed sync_data() for \"{}\": {}.",
+			robots_file_name.display(),
+			e
+		)
+	});
+	println!("Wrote {}.", robots_file_name.display());
 }
