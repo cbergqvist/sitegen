@@ -21,7 +21,7 @@ pub struct FeedEntry {
 }
 
 pub fn generate(
-	file_name: &PathBuf,
+	file_path: &PathBuf,
 	header: &FeedHeader,
 	entries: Vec<FeedEntry>,
 	output_dir: &PathBuf,
@@ -32,20 +32,34 @@ pub fn generate(
 		url
 	}
 
-	let mut feed = fs::File::create(&file_name).unwrap_or_else(|e| {
-		panic!("Failed creating {}: {}", file_name.display(), e)
+	let parent_dir = file_path.parent().unwrap_or_else(|| {
+		panic!(
+			"Feed file path without a parent directory?: {}",
+			file_path.display()
+		)
+	});
+	fs::create_dir_all(parent_dir).unwrap_or_else(|e| {
+		panic!(
+			"Failed creating directories for {}: {}",
+			parent_dir.display(),
+			e
+		)
+	});
+
+	let mut feed = fs::File::create(&file_path).unwrap_or_else(|e| {
+		panic!("Failed creating {}: {}", file_path.display(), e)
 	});
 
 	let mut output = BufWriter::new(Vec::new());
 	let feed_url = complete_url(
 		&header.base_url,
-		&file_name
+		&file_path
 			.strip_prefix(output_dir)
 			.unwrap_or_else(|e| {
 				panic!(
 					"Failed stripping prefix {} from {}: {}",
 					output_dir.display(),
-					file_name.display(),
+					file_path.display(),
 					e
 				)
 			})
@@ -111,14 +125,14 @@ pub fn generate(
 	write_to_stream(b"</feed>", &mut output);
 
 	feed.write_all(output.buffer()).unwrap_or_else(|e| {
-		panic!("Failed writing to \"{}\": {}.", &file_name.display(), e)
+		panic!("Failed writing to \"{}\": {}.", &file_path.display(), e)
 	});
 
 	// Avoiding sync_all() for now to be friendlier to disks.
 	feed.sync_data().unwrap_or_else(|e| {
 		panic!(
 			"Failed sync_data() for \"{}\": {}.",
-			&file_name.display(),
+			&file_path.display(),
 			e
 		)
 	});

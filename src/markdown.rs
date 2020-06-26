@@ -12,6 +12,11 @@ use crate::util::write_to_stream;
 
 use pulldown_cmark::{html, Parser};
 
+pub struct ComputedFilePath {
+	pub path: PathBuf,
+	pub group: Option<String>,
+}
+
 pub struct GeneratedFile {
 	pub path: PathBuf,
 	pub group: Option<String>,
@@ -43,11 +48,6 @@ impl InputFileCollection {
 		self.markdown.append(&mut other.markdown);
 		self.raw.append(&mut other.raw);
 	}
-}
-
-struct ComputedFilePath {
-	path: PathBuf,
-	group: Option<String>,
 }
 
 pub fn get_files(input_dir: &PathBuf) -> InputFileCollection {
@@ -144,7 +144,7 @@ pub fn process_file(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-	input_output_map: &mut HashMap<PathBuf, PathBuf>,
+	input_output_map: &mut HashMap<PathBuf, ComputedFilePath>,
 ) -> GeneratedFile {
 	let timer = Instant::now();
 
@@ -194,6 +194,7 @@ pub fn process_file(
 				root_output_dir,
 			)
 		})
+		.path
 		.clone();
 
 	write_html_page(
@@ -240,7 +241,7 @@ pub fn process_template_file_without_markdown(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-	input_output_map: &mut HashMap<PathBuf, PathBuf>,
+	input_output_map: &mut HashMap<PathBuf, ComputedFilePath>,
 ) -> PathBuf {
 	let timer = Instant::now();
 
@@ -264,6 +265,7 @@ pub fn process_template_file_without_markdown(
 				root_output_dir,
 			)
 		})
+		.path
 		.clone();
 
 	write_html_page(
@@ -332,7 +334,7 @@ pub fn compute_output_path(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-) -> PathBuf {
+) -> ComputedFilePath {
 	let mut path = root_output_dir.clone();
 	if input_file_path.starts_with(root_input_dir) {
 		path.push(
@@ -379,7 +381,20 @@ pub fn compute_output_path(
 		}
 	}
 
-	path
+	let mut group = None;
+	let input_file_parent = input_file_path
+		.parent()
+		.unwrap_or_else(|| {
+			panic!("Failed to get parent from: {}", input_file_path.display())
+		})
+		.file_stem()
+		.unwrap()
+		.to_string_lossy();
+	if input_file_parent.ends_with('s') {
+		group = Some(input_file_parent.to_string());
+	}
+
+	ComputedFilePath { path, group }
 }
 
 // Rolling a simple version of Liquid parsing on my own since the official Rust
@@ -396,7 +411,7 @@ fn write_html_page(
 	template_file: &mut BufReader<fs::File>,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-	input_output_map: &HashMap<PathBuf, PathBuf>,
+	input_output_map: &HashMap<PathBuf, ComputedFilePath>,
 ) {
 	enum State {
 		JustHtml,
@@ -701,7 +716,7 @@ fn run_function(
 	template_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-	input_output_map: &HashMap<PathBuf, PathBuf>,
+	input_output_map: &HashMap<PathBuf, ComputedFilePath>,
 ) {
 	if function.is_empty() {
 		panic!("Empty function name.")
@@ -747,7 +762,7 @@ fn include_file(
 	template_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-	input_output_map: &HashMap<PathBuf, PathBuf>,
+	input_output_map: &HashMap<PathBuf, ComputedFilePath>,
 ) {
 	let included_file_path =
 		root_input_dir.join("_includes").join(&*parameter_str);
@@ -787,7 +802,7 @@ fn check_and_emit_link(
 	parameter_str: &str,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-	input_output_map: &HashMap<PathBuf, PathBuf>,
+	input_output_map: &HashMap<PathBuf, ComputedFilePath>,
 ) {
 	let append_index_html = parameter_str.ends_with('/');
 	if !parameter_str.starts_with('/') {
@@ -800,31 +815,37 @@ fn check_and_emit_link(
 	if append_index_html {
 		path = path.join(PathBuf::from("index.html"));
 	}
-	if let Some(linked_output_path) = input_output_map.get(&path) {
+	if let Some(linked_output) = input_output_map.get(&path) {
 		let mut equal_prefix = PathBuf::new();
+		let mut equal_component_count = 0;
 		for (self_component, link_component) in output_file_path
 			.components()
-			.zip(linked_output_path.components())
+			.zip(linked_output.path.components())
 		{
 			if self_component != link_component {
 				break;
 			}
 			equal_prefix = equal_prefix.join(self_component);
+			equal_component_count += 1;
 		}
 		if equal_prefix.iter().next() == None {
-			panic!("No common prefix, expected at least {} but own path is {} and link is {}.", root_output_dir.display(), output_file_path.display(), linked_output_path.display());
+			panic!("No common prefix, expected at least {} but own path is {} and link is {}.", root_output_dir.display(), output_file_path.display(), linked_output.path.display());
 		}
 
 		// Do not strip own file name from link if path is the same.
-		if output_file_path == linked_output_path {
+		if output_file_path == &linked_output.path {
 			equal_prefix.pop();
 		}
 
 		let own_component_count = output_file_path.components().count();
-		let linked_component_count = linked_output_path.components().count();
+		let linked_component_count = linked_output.path.components().count();
 		let mut base = PathBuf::new();
 		if own_component_count > linked_component_count {
 			for _i in 0..(own_component_count - linked_component_count) {
+				base = base.join("../");
+			}
+		} else if own_component_count > equal_component_count + 1 {
+			for _i in 0..((own_component_count - 1) - equal_component_count) {
 				base = base.join("../");
 			}
 		} else {
@@ -834,7 +855,7 @@ fn check_and_emit_link(
 		let mut prefix_plus_slash = equal_prefix.to_string_lossy().to_string();
 		prefix_plus_slash.push('/');
 		let mut linked_output_path_stripped = base
-			.join(linked_output_path.strip_prefix(&prefix_plus_slash).unwrap());
+			.join(linked_output.path.strip_prefix(&prefix_plus_slash).unwrap());
 
 		let mut append_trailing_slash = false;
 		if linked_output_path_stripped.file_name()
@@ -850,7 +871,7 @@ fn check_and_emit_link(
 			linked_output_path_stripped_str.push('/');
 		}
 
-		println!("File: {}, original link: {}, translated: {}, prefix+slash: {}, result: {}", output_file_path.display(), parameter_str, linked_output_path.display(), prefix_plus_slash, &linked_output_path_stripped_str);
+		println!("File: {}, original link: {}, translated: {}, prefix+slash: {}, result: {}", output_file_path.display(), parameter_str, linked_output.path.display(), prefix_plus_slash, &linked_output_path_stripped_str);
 
 		write_to_stream(linked_output_path_stripped_str.as_bytes(), output_buf);
 	} else {

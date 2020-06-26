@@ -1,6 +1,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
+use std::io::Write;
 use std::io::{ErrorKind, Read};
 use std::net::{TcpListener, TcpStream};
 use std::option::Option;
@@ -20,6 +21,7 @@ mod markdown;
 mod util;
 mod websocket;
 
+use markdown::ComputedFilePath;
 use util::{write_to_stream_log_count, Refresh};
 
 struct BoolArg {
@@ -71,7 +73,7 @@ struct ConfigArgs {
 	author: StringArg,
 	base_url: StringArg,
 	email: StringArg,
-	help: BoolArg,
+	help: BoolArg, // Command line-only, doesn't transfer into Config.
 	host: StringArg,
 	input: StringArg,
 	output: StringArg,
@@ -303,26 +305,26 @@ fn inner_main(config: &Config) {
 		// actual processing of files, we have records of all other files.
 		// This allows us to properly detect broken links.
 		for file_name in &input_files.html {
-			let output_file_path = markdown::compute_output_path(
+			let output_file = markdown::compute_output_path(
 				file_name,
 				&config.input_dir,
 				&config.output_dir,
 			);
 			checked_insert(
 				file_name.clone(),
-				output_file_path,
+				output_file,
 				&mut input_output_map,
 			)
 		}
 		for file_name in &input_files.markdown {
-			let output_file_path = markdown::compute_output_path(
+			let output_file = markdown::compute_output_path(
 				file_name,
 				&config.input_dir,
 				&config.output_dir,
 			);
 			checked_insert(
 				file_name.clone(),
-				output_file_path,
+				output_file,
 				&mut input_output_map,
 			)
 		}
@@ -332,7 +334,35 @@ fn inner_main(config: &Config) {
 				.join(file_name.strip_prefix(&config.input_dir).unwrap());
 			checked_insert(
 				file_name.clone(),
-				output_file_path,
+				ComputedFilePath {
+					path: output_file_path,
+					group: None,
+				},
+				&mut input_output_map,
+			)
+		}
+
+		let mut groups = HashMap::new();
+		for (_, output_file) in &input_output_map {
+			if let Some(group) = &output_file.group {
+				match groups.entry(group.to_string()) {
+					Entry::Occupied(..) => {}
+					Entry::Vacant(ve) => {
+						ve.insert(Vec::new());
+					}
+				}
+			}
+		}
+
+		for (group, _) in &groups {
+			let xml_file = PathBuf::from("feeds")
+				.join(PathBuf::from(group).with_extension("xml"));
+			checked_insert(
+				config.input_dir.join(&xml_file), // virtual input
+				ComputedFilePath {
+					path: config.output_dir.join(xml_file),
+					group: None,
+				},
 				&mut input_output_map,
 			)
 		}
@@ -346,7 +376,6 @@ fn inner_main(config: &Config) {
 			);
 		}
 
-		let mut groups = HashMap::new();
 		for file_name in &input_files.markdown {
 			let generated = markdown::process_file(
 				file_name,
@@ -355,20 +384,30 @@ fn inner_main(config: &Config) {
 				&mut input_output_map,
 			);
 			if let Some(group) = generated.group {
-				let entries = groups.entry(group).or_insert_with(Vec::new);
-				entries.push(atom::FeedEntry {
-					front_matter: generated.front_matter,
-					html_content: generated.html_content,
-					permalink: generated.path.clone(),
-				});
+				match groups.entry(group.clone()) {
+					Entry::Vacant(..) => panic!(
+						"Group {} should have already been added above.",
+						group
+					),
+					Entry::Occupied(oe) => {
+						let entries = oe.into_mut();
+						entries.push(atom::FeedEntry {
+							front_matter: generated.front_matter,
+							html_content: generated.html_content,
+							permalink: generated.path.clone(),
+						});
+					}
+				}
 			}
 		}
 
 		for (group, entries) in groups {
-			let mut feed_name = config.output_dir.join(PathBuf::from(&group));
-			feed_name.set_extension("xml");
+			let feed_name = config
+				.output_dir
+				.join(PathBuf::from("feeds").join(PathBuf::from(&group)))
+				.with_extension("xml");
 			let header = atom::FeedHeader {
-				title: group,
+				title: group.to_string(),
 				base_url: config.base_url.to_string(),
 				latest_update: "2001-01-19T20:10:00Z".to_string(),
 				author_name: config.author.to_string(),
@@ -398,7 +437,7 @@ fn inner_main(config: &Config) {
 
 	let root_dir = PathBuf::from(&config.output_dir);
 	let fs_cond_clone = fs_cond.clone();
-	let start_file = find_newest_file(&input_output_map);
+	let start_file = find_newest_file(&input_output_map, &config.input_dir);
 
 	spawn_listening_thread(
 		&config.host,
@@ -420,16 +459,16 @@ fn inner_main(config: &Config) {
 
 fn checked_insert(
 	key: PathBuf,
-	value: PathBuf,
-	map: &mut HashMap<PathBuf, PathBuf>,
+	value: ComputedFilePath,
+	map: &mut HashMap<PathBuf, ComputedFilePath>,
 ) {
 	match map.entry(key) {
 		Entry::Occupied(oe) => {
 			panic!(
 				"Key {} already had value: {}, when trying to insert: {}",
 				oe.key().display(),
-				oe.get().display(),
-				value.display()
+				oe.get().path.display(),
+				value.path.display()
 			);
 		}
 		Entry::Vacant(ve) => ve.insert(value),
@@ -437,11 +476,20 @@ fn checked_insert(
 }
 
 fn find_newest_file(
-	input_output_map: &HashMap<PathBuf, PathBuf>,
+	input_output_map: &HashMap<PathBuf, ComputedFilePath>,
+	input_dir: &PathBuf,
 ) -> Option<PathBuf> {
 	let mut newest_file = None;
 	let mut newest_time = std::time::UNIX_EPOCH;
+	let virtual_dir = input_dir.join(PathBuf::from("feeds"));
 	for (input_file, output_file) in input_output_map {
+		if input_file.extension() == Some(OsStr::new(util::XML_EXTENSION)) {
+			if let Some(parent) = input_file.parent() {
+				if parent == virtual_dir {
+					continue;
+				}
+			}
+		}
 		let metadata = fs::metadata(input_file).unwrap_or_else(|e| {
 			panic!(
 				"Failed fetching metadata for {}: {}",
@@ -465,10 +513,10 @@ fn find_newest_file(
 	}
 
 	if let Some(file) = &newest_file {
-		println!("Newest file: {}", &file.display());
+		println!("Newest file: {}", &file.path.display());
 	}
 
-	newest_file
+	newest_file.map(|p| p.path.clone())
 }
 
 fn spawn_listening_thread(
@@ -525,7 +573,7 @@ fn watch_fs(
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
 	fs_cond: &Arc<(Mutex<Refresh>, Condvar)>,
-	mut input_output_map: &mut HashMap<PathBuf, PathBuf>,
+	mut input_output_map: &mut HashMap<PathBuf, ComputedFilePath>,
 ) -> ! {
 	let (tx, rx) = channel();
 	let mut watcher =
@@ -582,7 +630,7 @@ fn get_path_to_refresh(
 	input_file_path: &PathBuf,
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
-	input_output_map: &mut HashMap<PathBuf, PathBuf>,
+	input_output_map: &mut HashMap<PathBuf, ComputedFilePath>,
 ) -> Option<PathBuf> {
 	let css_extension = OsStr::new(util::CSS_EXTENSION);
 	let html_extension = OsStr::new(util::HTML_EXTENSION);
