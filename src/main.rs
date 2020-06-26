@@ -22,7 +22,7 @@ mod util;
 mod websocket;
 
 use markdown::ComputedFilePath;
-use util::{write_to_stream_log_count, Refresh};
+use util::{write_to_stream, write_to_stream_log_count, Refresh};
 
 struct BoolArg {
 	name: &'static str,
@@ -422,7 +422,12 @@ fn inner_main(config: &Config) {
 			&config.output_dir,
 		);
 
-		write_robots_txt(&config.output_dir)
+		let sitemap_url = write_sitemap_xml(
+			&config.output_dir,
+			&config.base_url,
+			&input_output_map,
+		);
+		write_robots_txt(&config.output_dir, &sitemap_url);
 	}
 
 	if !config.watch {
@@ -964,28 +969,88 @@ fn handle_client(
 	}
 }
 
-fn write_robots_txt(output_dir: &PathBuf) {
-	let robots_file_name = output_dir.join(PathBuf::from("robots.txt"));
-	let mut robots_file =
-		fs::File::create(&robots_file_name).unwrap_or_else(|e| {
-			panic!("Failed creating {}: {}", robots_file_name.display(), e)
-		});
-	robots_file
-		.write_all(
-			b"User-agent: *
-Allow: /
-",
-		)
-		.unwrap_or_else(|e| {
-			panic!("Failed writing to {}: {}", robots_file_name.display(), e)
-		});
-	// Avoiding sync_all() for now to be friendlier to disks.
-	robots_file.sync_data().unwrap_or_else(|e| {
-		panic!(
-			"Failed sync_data() for \"{}\": {}.",
-			robots_file_name.display(),
-			e
-		)
+fn write_robots_txt(output_dir: &PathBuf, sitemap_url: &String) {
+	let file_name = output_dir.join(PathBuf::from("robots.txt"));
+	let mut file = fs::File::create(&file_name).unwrap_or_else(|e| {
+		panic!("Failed creating {}: {}", file_name.display(), e)
 	});
-	println!("Wrote {}.", robots_file_name.display());
+	file.write_all(
+		format!(
+			"User-agent: *
+Allow: /
+Sitemap: {}
+",
+			sitemap_url
+		)
+		.as_bytes(),
+	)
+	.unwrap_or_else(|e| {
+		panic!("Failed writing to {}: {}", file_name.display(), e)
+	});
+	// Avoiding sync_all() for now to be friendlier to disks.
+	file.sync_data().unwrap_or_else(|e| {
+		panic!("Failed sync_data() for \"{}\": {}.", file_name.display(), e)
+	});
+	println!("Wrote {}.", file_name.display());
+}
+
+fn write_sitemap_xml(
+	output_dir: &PathBuf,
+	base_url: &String,
+	input_output_map: &HashMap<PathBuf, ComputedFilePath>,
+) -> String {
+	let official_file_name = PathBuf::from("sitemap.xml");
+	let file_name = output_dir.join(&official_file_name);
+	let mut file = fs::File::create(&file_name).unwrap_or_else(|e| {
+		panic!("Failed creating {}: {}", file_name.display(), e)
+	});
+	write_to_stream(
+		b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">
+",
+		&mut file,
+	);
+
+	let html_extension = OsStr::new(util::HTML_EXTENSION);
+
+	for (_, output_file) in input_output_map {
+		if output_file.path.extension() != Some(html_extension) {
+			continue;
+		}
+
+		let path = output_file.path.strip_prefix(output_dir).unwrap();
+		let mut output_url = base_url.clone();
+		if path.file_name() == Some(OsStr::new("index.html")) {
+			output_url.push_str(&path.with_file_name("").to_string_lossy())
+		} else {
+			output_url.push_str(&path.to_string_lossy())
+		}
+
+		write_to_stream(
+			format!(
+				"	<url>
+		<loc>{}</loc>
+	</url>
+",
+				output_url
+			)
+			.as_bytes(),
+			&mut file,
+		);
+	}
+
+	write_to_stream(
+		b"</urlset>
+",
+		&mut file,
+	);
+	// Avoiding sync_all() for now to be friendlier to disks.
+	file.sync_data().unwrap_or_else(|e| {
+		panic!("Failed sync_data() for \"{}\": {}.", file_name.display(), e)
+	});
+	println!("Wrote {}.", file_name.display());
+
+	let mut result = base_url.clone();
+	result.push_str(&official_file_name.to_string_lossy());
+	result
 }
