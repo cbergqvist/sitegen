@@ -2,7 +2,7 @@ use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -12,7 +12,14 @@ use crate::util::write_to_stream;
 
 use pulldown_cmark::{html, Parser};
 
-pub struct ComputedFilePath {
+#[derive(Clone)]
+pub struct OutputFile {
+	pub path: PathBuf,
+	pub group: Option<String>,
+	pub front_matter: Option<FrontMatter>,
+}
+
+pub struct ComputedTemplatePath {
 	pub path: PathBuf,
 	pub group: Option<String>,
 }
@@ -144,17 +151,42 @@ pub fn process_file(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-	input_output_map: &mut HashMap<PathBuf, ComputedFilePath>,
+	input_output_map: &mut HashMap<PathBuf, OutputFile>,
 ) -> GeneratedFile {
 	let timer = Instant::now();
+
+	// TODO: Inserting different format?
+	let output_file = input_output_map
+		.entry(input_file_path.clone())
+		.or_insert_with(|| {
+			compute_output_path(
+				input_file_path,
+				root_input_dir,
+				root_output_dir,
+			)
+		})
+		.clone();
 
 	let mut input_file =
 		BufReader::new(fs::File::open(&input_file_path).unwrap_or_else(|e| {
 			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
 		}));
 
-	let front_matter =
-		crate::front_matter::parse(input_file_path, &mut input_file);
+	let front_matter = if let Some(fm) = output_file.front_matter {
+		fm
+	} else {
+		panic!(
+			"Expecting at least a default FrontMatter instance on file: {}",
+			output_file.path.display()
+		)
+	};
+	input_file
+		.seek(SeekFrom::Start(front_matter.end_position))
+		.unwrap_or_else(|e| {
+			panic!("Failed seeking in {}: {}", input_file_path.display(), e)
+		});
+
+	let output_file_path = output_file.path;
 
 	let mut markdown_content = String::new();
 	let _size = input_file
@@ -184,19 +216,6 @@ pub fn process_file(
 		}),
 	);
 
-	// TODO: Inserting different format?
-	let output_file_path = input_output_map
-		.entry(input_file_path.clone())
-		.or_insert_with(|| {
-			compute_output_path(
-				input_file_path,
-				root_input_dir,
-				root_output_dir,
-			)
-		})
-		.path
-		.clone();
-
 	write_html_page(
 		&output_file_path,
 		&mut output_buf,
@@ -214,7 +233,7 @@ pub fn process_file(
 	println!(
 		"Converted {} to {} (using template {}) in {} ms.",
 		input_file_path.display(),
-		output_file_path.display(),
+		&output_file_path.display(),
 		template_path_result.path.display(),
 		timer.elapsed().as_millis()
 	);
@@ -241,22 +260,12 @@ pub fn process_template_file_without_markdown(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-	input_output_map: &mut HashMap<PathBuf, ComputedFilePath>,
+	input_output_map: &mut HashMap<PathBuf, OutputFile>,
 ) -> PathBuf {
 	let timer = Instant::now();
 
-	let mut input_file =
-		BufReader::new(fs::File::open(&input_file_path).unwrap_or_else(|e| {
-			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
-		}));
-
-	let front_matter =
-		crate::front_matter::parse(input_file_path, &mut input_file);
-
-	let mut output_buf = BufWriter::new(Vec::new());
-
 	// TODO: Inserting different format?
-	let output_file_path = input_output_map
+	let output_file = input_output_map
 		.entry(input_file_path.clone())
 		.or_insert_with(|| {
 			compute_output_path(
@@ -265,8 +274,30 @@ pub fn process_template_file_without_markdown(
 				root_output_dir,
 			)
 		})
-		.path
 		.clone();
+
+	let mut input_file =
+		BufReader::new(fs::File::open(&input_file_path).unwrap_or_else(|e| {
+			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
+		}));
+
+	let front_matter = if let Some(fm) = output_file.front_matter {
+		fm
+	} else {
+		panic!(
+			"Expecting at least a default FrontMatter instance on file: {}",
+			output_file.path.display()
+		)
+	};
+	input_file
+		.seek(SeekFrom::Start(front_matter.end_position))
+		.unwrap_or_else(|e| {
+			panic!("Failed seeking in {}: {}", input_file_path.display(), e)
+		});
+
+	let output_file_path = output_file.path;
+
+	let mut output_buf = BufWriter::new(Vec::new());
 
 	write_html_page(
 		&output_file_path,
@@ -334,7 +365,7 @@ pub fn compute_output_path(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-) -> ComputedFilePath {
+) -> OutputFile {
 	let mut path = root_output_dir.clone();
 	if input_file_path.starts_with(root_input_dir) {
 		path.push(
@@ -381,6 +412,14 @@ pub fn compute_output_path(
 		}
 	}
 
+	let mut input_file =
+		BufReader::new(fs::File::open(&input_file_path).unwrap_or_else(|e| {
+			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
+		}));
+
+	let front_matter =
+		crate::front_matter::parse(input_file_path, &mut input_file);
+
 	let mut group = None;
 	let input_file_parent = input_file_path
 		.parent()
@@ -399,7 +438,11 @@ pub fn compute_output_path(
 		group = Some(input_file_parent.to_string());
 	}
 
-	ComputedFilePath { path, group }
+	OutputFile {
+		path,
+		group,
+		front_matter: Some(front_matter),
+	}
 }
 
 // Rolling a simple version of Liquid parsing on my own since the official Rust
@@ -416,7 +459,7 @@ fn write_html_page(
 	template_file: &mut BufReader<fs::File>,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-	input_output_map: &HashMap<PathBuf, ComputedFilePath>,
+	input_output_map: &HashMap<PathBuf, OutputFile>,
 ) {
 	enum State {
 		JustHtml,
@@ -579,7 +622,7 @@ fn write_html_page(
 fn compute_template_path(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
-) -> ComputedFilePath {
+) -> ComputedTemplatePath {
 	let mut template_file_path = root_input_dir.join(PathBuf::from("_layouts"));
 	let input_file_parent = input_file_path.parent().unwrap_or_else(|| {
 		panic!("Failed to get parent from: {}", input_file_path.display())
@@ -642,7 +685,7 @@ fn compute_template_path(
 		template_file_path = default_template;
 	}
 
-	ComputedFilePath {
+	ComputedTemplatePath {
 		path: template_file_path,
 		group,
 	}
@@ -721,7 +764,7 @@ fn run_function(
 	template_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-	input_output_map: &HashMap<PathBuf, ComputedFilePath>,
+	input_output_map: &HashMap<PathBuf, OutputFile>,
 ) {
 	if function.is_empty() {
 		panic!("Empty function name.")
@@ -767,7 +810,7 @@ fn include_file(
 	template_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-	input_output_map: &HashMap<PathBuf, ComputedFilePath>,
+	input_output_map: &HashMap<PathBuf, OutputFile>,
 ) {
 	let included_file_path =
 		root_input_dir.join("_includes").join(&*parameter_str);
@@ -807,7 +850,7 @@ fn check_and_emit_link(
 	parameter_str: &str,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-	input_output_map: &HashMap<PathBuf, ComputedFilePath>,
+	input_output_map: &HashMap<PathBuf, OutputFile>,
 ) {
 	let append_index_html = parameter_str.ends_with('/');
 	if !parameter_str.starts_with('/') {

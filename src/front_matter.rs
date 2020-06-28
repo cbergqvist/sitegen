@@ -4,6 +4,7 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::PathBuf;
 use yaml_rust::YamlLoader;
 
+#[derive(Clone)]
 pub struct FrontMatter {
 	pub title: String,
 	pub date: String,
@@ -13,6 +14,7 @@ pub struct FrontMatter {
 	pub tags: Vec<String>,
 	pub layout: Option<String>,
 	pub custom_attributes: BTreeMap<String, String>,
+	pub end_position: u64,
 }
 
 pub fn parse(
@@ -34,6 +36,7 @@ pub fn parse(
 		tags: Vec::new(),
 		layout: None,
 		custom_attributes: BTreeMap::new(),
+		end_position: 0,
 	};
 
 	let mut line = String::new();
@@ -70,6 +73,14 @@ pub fn parse(
 			)
 		});
 		if line == "---\n" {
+			result.end_position =
+				reader.seek(SeekFrom::Current(0)).unwrap_or_else(|e| {
+					panic!(
+						"Failed getting current buffer position of file {}: {}",
+						input_file_path.display(),
+						e
+					)
+				});
 			break;
 		} else {
 			line_count += 1;

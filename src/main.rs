@@ -21,7 +21,7 @@ mod markdown;
 mod util;
 mod websocket;
 
-use markdown::ComputedFilePath;
+use markdown::OutputFile;
 use util::{write_to_stream, write_to_stream_log_count, Refresh};
 
 struct BoolArg {
@@ -343,9 +343,10 @@ fn inner_main(config: &Config) {
 			);
 			checked_insert(
 				file_name.clone(),
-				ComputedFilePath {
+				OutputFile {
 					path: output_file_path,
 					group: None,
+					front_matter: None,
 				},
 				&mut input_output_map,
 			)
@@ -368,9 +369,10 @@ fn inner_main(config: &Config) {
 				.join(PathBuf::from(group).with_extension("xml"));
 			checked_insert(
 				config.input_dir.join(&xml_file), // virtual input
-				ComputedFilePath {
+				OutputFile {
 					path: config.output_dir.join(xml_file),
 					group: None,
+					front_matter: None,
 				},
 				&mut input_output_map,
 			)
@@ -479,8 +481,8 @@ fn inner_main(config: &Config) {
 
 fn checked_insert(
 	key: PathBuf,
-	value: ComputedFilePath,
-	map: &mut HashMap<PathBuf, ComputedFilePath>,
+	value: OutputFile,
+	map: &mut HashMap<PathBuf, OutputFile>,
 ) {
 	match map.entry(key) {
 		Entry::Occupied(oe) => {
@@ -496,7 +498,7 @@ fn checked_insert(
 }
 
 fn find_newest_file(
-	input_output_map: &HashMap<PathBuf, ComputedFilePath>,
+	input_output_map: &HashMap<PathBuf, OutputFile>,
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
 ) -> Option<PathBuf> {
@@ -628,7 +630,7 @@ fn watch_fs(
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
 	fs_cond: &Arc<(Mutex<Refresh>, Condvar)>,
-	mut input_output_map: &mut HashMap<PathBuf, ComputedFilePath>,
+	mut input_output_map: &mut HashMap<PathBuf, OutputFile>,
 ) -> ! {
 	let (tx, rx) = channel();
 	let mut watcher =
@@ -685,7 +687,7 @@ fn get_path_to_refresh(
 	input_file_path: &PathBuf,
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
-	input_output_map: &mut HashMap<PathBuf, ComputedFilePath>,
+	input_output_map: &mut HashMap<PathBuf, OutputFile>,
 ) -> Option<PathBuf> {
 	let css_extension = OsStr::new(util::CSS_EXTENSION);
 	let html_extension = OsStr::new(util::HTML_EXTENSION);
@@ -1065,7 +1067,7 @@ Sitemap: {}
 fn write_sitemap_xml(
 	output_dir: &PathBuf,
 	base_url: &String,
-	input_output_map: &HashMap<PathBuf, ComputedFilePath>,
+	input_output_map: &HashMap<PathBuf, OutputFile>,
 ) -> String {
 	let official_file_name = PathBuf::from("sitemap.xml");
 	let file_name = output_dir.join(&official_file_name);
