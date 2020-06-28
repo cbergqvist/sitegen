@@ -453,7 +453,11 @@ fn inner_main(config: &Config) {
 
 	let root_dir = PathBuf::from(&config.output_dir);
 	let fs_cond_clone = fs_cond.clone();
-	let start_file = find_newest_file(&input_output_map, &config.input_dir);
+	let start_file = find_newest_file(
+		&input_output_map,
+		&config.input_dir,
+		&config.output_dir,
+	);
 
 	spawn_listening_thread(
 		&config.host,
@@ -494,18 +498,42 @@ fn checked_insert(
 fn find_newest_file(
 	input_output_map: &HashMap<PathBuf, ComputedFilePath>,
 	input_dir: &PathBuf,
+	output_dir: &PathBuf,
 ) -> Option<PathBuf> {
 	let mut newest_file = None;
 	let mut newest_time = std::time::UNIX_EPOCH;
-	let virtual_dir = input_dir.join(PathBuf::from("feeds"));
+
+	let supported_extensions = [
+		OsStr::new(util::HTML_EXTENSION),
+		OsStr::new(util::MARKDOWN_EXTENSION),
+	];
+
 	for (input_file, output_file) in input_output_map {
-		if input_file.extension() == Some(OsStr::new(util::XML_EXTENSION)) {
-			if let Some(parent) = input_file.parent() {
-				if parent == virtual_dir {
-					continue;
-				}
-			}
+		let extension = if let Some(e) = input_file.extension() {
+			e
+		} else {
+			continue;
+		};
+
+		if !supported_extensions.iter().any(|e| e == &extension) {
+			continue;
 		}
+
+		let unique_path = input_file
+			.strip_prefix(input_dir)
+			.unwrap_or_else(|e| {
+				panic!(
+					"Failed stripping prefix {} from {}: {}",
+					input_dir.display(),
+					input_file.display(),
+					e
+				)
+			})
+			.to_string_lossy();
+		if unique_path.starts_with('_') || unique_path.starts_with('.') {
+			continue;
+		}
+
 		let metadata = fs::metadata(input_file).unwrap_or_else(|e| {
 			panic!(
 				"Failed fetching metadata for {}: {}",
@@ -524,15 +552,26 @@ fn find_newest_file(
 
 		if modified > newest_time {
 			newest_time = modified;
-			newest_file = Some(output_file.clone());
+			newest_file = Some(&output_file.path);
 		}
 	}
 
 	if let Some(file) = &newest_file {
-		println!("Newest file: {}", &file.path.display());
+		println!("Newest file: {}", &file.display());
 	}
 
-	newest_file.map(|p| p.path.clone())
+	newest_file.map(|p| {
+		p.strip_prefix(output_dir)
+			.unwrap_or_else(|e| {
+				panic!(
+					"Failed stripping prefix {} from {}: {}",
+					output_dir.display(),
+					p.display(),
+					e
+				)
+			})
+			.to_path_buf()
+	})
 }
 
 fn spawn_listening_thread(
