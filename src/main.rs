@@ -11,240 +11,24 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
-use std::{env, fmt, fs};
+use std::{env, fs};
 
 use notify::{watcher, RecursiveMode, Watcher};
 
 mod atom;
+mod config;
 mod front_matter;
 mod markdown;
 mod util;
 mod websocket;
 
+use crate::config::{Config, ConfigArgs};
 use markdown::OutputFile;
 use util::{write_to_stream, write_to_stream_log_count, Refresh};
-
-struct BoolArg {
-	name: &'static str,
-	help: &'static str,
-	value: bool,
-}
-
-struct I16Arg {
-	name: &'static str,
-	help: &'static str,
-	value: i16,
-	set: bool,
-}
-
-struct StringArg {
-	name: &'static str,
-	help: &'static str,
-	value: String,
-	set: bool,
-}
-
-impl fmt::Display for BoolArg {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "-{} {}", self.name, self.help)
-	}
-}
-
-impl fmt::Display for I16Arg {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "-{} {}", self.name, self.help)
-	}
-}
-
-impl fmt::Display for StringArg {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "-{} {}", self.name, self.help)
-	}
-}
 
 enum ReadResult {
 	GetRequest(PathBuf),
 	WebSocket(String),
-}
-
-// Not using the otherwise brilliant CLAP crate since I detest string matching
-// args to get their values.
-struct ConfigArgs {
-	author: StringArg,
-	base_url: StringArg,
-	email: StringArg,
-	help: BoolArg, // Command line-only, doesn't transfer into Config.
-	host: StringArg,
-	input: StringArg,
-	output: StringArg,
-	port: I16Arg,
-	watch: BoolArg,
-}
-
-struct Config {
-	author: String,
-	base_url: String,
-	email: String,
-	host: String,
-	input_dir: PathBuf,
-	output_dir: PathBuf,
-	port: i16,
-	watch: bool,
-}
-
-impl ConfigArgs {
-	fn new() -> Self {
-		Self {
-			author: StringArg {
-				name: "author",
-				help: "Set the name of the author.",
-				value: String::from("John Doe"),
-				set: false,
-			},
-			base_url: StringArg {
-				name: "base_url",
-				help: "Set base URL to be used in output files, default is \"http://test.com/\".",
-				value: String::from("http://test.com/"),
-				set: false,
-			},
-			email: StringArg {
-				name: "email",
-				help: "Set email of the author.",
-				value: String::from("john.doe@test.com"),
-				set: false,
-			},
-			help: BoolArg {
-				name: "help",
-				help: "Print this text.",
-				value: false,
-			},
-			host: StringArg {
-				name: "host",
-				help: "Set address to bind to. The default 127.0.0.1 can be used for privacy and 0.0.0.0 to give access to other machines.",
-				value: String::from("127.0.0.1"),
-				set: false,
-			},
-			input: StringArg {
-				name: "input",
-				help: "Set input directory to process.",
-				value: String::from("./input"),
-				set: false,
-			},
-			output: StringArg {
-				name: "output",
-				help: "Set output directory to write to.",
-				value: String::from("./output"),
-				set: false,
-			},
-			port: I16Arg {
-				name: "port",
-				help: "Set port to bind to.",
-				value: 8090,
-				set: false,
-			},
-			watch: BoolArg {
-				name: "watch",
-				help: "Run indefinitely, watching input directory for changes.",
-				value: false,
-			},
-		}
-	}
-
-	fn parse(&mut self, args: std::env::Args) {
-		let mut bool_args = vec![&mut self.help, &mut self.watch];
-		let mut i16_args = vec![&mut self.port];
-		let mut string_args = vec![
-			&mut self.author,
-			&mut self.base_url,
-			&mut self.email,
-			&mut self.host,
-			&mut self.input,
-			&mut self.output,
-		];
-
-		let mut first_arg = true;
-		let mut previous_arg = None;
-		'arg_loop: for mut arg in args {
-			// Skip executable arg itself.
-			if first_arg {
-				first_arg = false;
-				continue;
-			}
-
-			if let Some(prev) = previous_arg {
-				for string_arg in &mut *string_args {
-					if prev == string_arg.name {
-						string_arg.value = arg;
-						string_arg.set = true;
-						previous_arg = None;
-						continue 'arg_loop;
-					}
-				}
-
-				for i16_arg in &mut *i16_args {
-					if prev == i16_arg.name {
-						i16_arg.value =
-							arg.parse::<i16>().unwrap_or_else(|e| {
-								panic!(
-									"Invalid value for {}: {}",
-									i16_arg.name, e
-								);
-							});
-						i16_arg.set = true;
-						previous_arg = None;
-						continue 'arg_loop;
-					}
-				}
-
-				panic!("Unhandled key-value arg: {}", prev);
-			}
-
-			if arg.len() < 3
-				|| arg.as_bytes()[0] != b'-'
-				|| arg.as_bytes()[1] != b'-'
-			{
-				panic!("Unexpected argument: {}", arg)
-			}
-
-			arg = arg.split_off(2);
-
-			for bool_arg in &mut *bool_args {
-				if arg == bool_arg.name {
-					bool_arg.value = true;
-					continue 'arg_loop;
-				}
-			}
-
-			for i16_arg in &*i16_args {
-				if arg == i16_arg.name {
-					previous_arg = Some(arg);
-					continue 'arg_loop;
-				}
-			}
-
-			for string_arg in &*string_args {
-				if arg == string_arg.name {
-					previous_arg = Some(arg);
-					continue 'arg_loop;
-				}
-			}
-
-			panic!("Unsupported argument: {}", arg)
-		}
-	}
-
-	fn values(self) -> Config {
-		Config {
-			author: self.author.value,
-			base_url: self.base_url.value,
-			email: self.email.value,
-			host: self.host.value,
-			input_dir: PathBuf::from(self.input.value),
-			output_dir: PathBuf::from(self.output.value),
-			port: self.port.value,
-			watch: self.watch.value,
-		}
-	}
 }
 
 fn main() {
@@ -260,15 +44,7 @@ Basic static site generator.
 
 Arguments:"
 		);
-		println!("{}", args.author);
-		println!("{}", args.base_url);
-		println!("{}", args.email);
-		println!("{}", args.help);
-		println!("{}", args.host);
-		println!("{}", args.input);
-		println!("{}", args.output);
-		println!("{}", args.port);
-		println!("{}", args.watch);
+		args.print_help();
 
 		return;
 	}
