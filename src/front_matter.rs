@@ -114,8 +114,11 @@ pub fn parse(
 		}
 	}
 
-	if result.date.is_none() {
-		println!("No published date specified in front matter of {}, fetching from file system..", input_file_path.display());
+	if (result.date.is_none() && result.edited.is_none())
+		|| result.date.as_deref() == Some("auto")
+		|| result.edited.as_deref() == Some("auto")
+	{
+		println!("Published or edited dates not specified or set to \"auto\" in front matter of {}, fetching modified date from file system..", input_file_path.display());
 		let metadata = fs::metadata(input_file_path).unwrap_or_else(|e| {
 			panic!(
 				"Failed fetching metadata for {}: {}",
@@ -132,8 +135,19 @@ pub fn parse(
 			)
 		});
 
-		result.date =
+		let fs_time =
 			Some(humantime::format_rfc3339_seconds(modified).to_string());
+
+		if result.date.as_deref() == Some("auto") {
+			result.date = fs_time;
+			if result.edited.is_some() {
+				panic!("Can't have date set to \"auto\" while also specifying edited in front matter of {}", input_file_path.display());
+			}
+		} else if (result.date.is_none() && result.edited.is_none())
+			|| result.edited.as_deref() == Some("auto")
+		{
+			result.edited = fs_time;
+		}
 	}
 
 	result
