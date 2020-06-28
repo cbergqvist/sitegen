@@ -49,7 +49,7 @@ pub fn handle_stream(
 	m.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
 	let accept_value = base64::encode(m.digest().bytes());
 
-	write_to_stream_log_count(format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\nSec-WebSocket-Protocol: chat\r\n\r\n", accept_value).as_bytes(), &mut stream);
+	write_to_stream_log_count(format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n", accept_value).as_bytes(), &mut stream);
 
 	stream.set_nonblocking(true).expect(
 		"Failed changing WebSocket TCP connection to nonblocking mode.",

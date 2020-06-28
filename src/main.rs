@@ -839,21 +839,26 @@ fn handle_read(stream: &mut TcpStream) -> Option<ReadResult> {
 				if let Some(method) = components.next() {
 					if method == "GET" {
 						if let Some(path) = components.next() {
+							let mut websocket_key = None;
 							for line in lines {
 								let mut components = line.split(' ');
 								if let Some(component) = components.next() {
 									if component == "Sec-WebSocket-Key:" {
-										if let Some(websocket_key) =
-											components.next()
-										{
-											return Some(
-												ReadResult::WebSocket(
-													String::from(websocket_key),
-												),
-											);
-										}
+										websocket_key = components.next();
+									} else if component
+										== "Sec-WebSocket-Protocol:"
+									{
+										let protocols: String =
+											components.collect::<String>();
+										panic!("We don't handle protocols correctly yet: {}", protocols)
 									}
 								}
+							}
+
+							if let Some(key) = websocket_key {
+								return Some(ReadResult::WebSocket(
+									key.to_string(),
+								));
 							}
 
 							Some(ReadResult::GetRequest(PathBuf::from(
@@ -910,16 +915,25 @@ fn handle_write(
 // Tag on time in order to distinguish different sockets.
 let socket = new WebSocket(\"ws://\" + window.location.hostname + \":\" + window.location.port + \"/chat?now=\" + Date.now())
 socket.onopen = function(e) {{
-//alert(\"[open] Connection established\")
+	//alert(\"[open] Connection established\")
 }}
 socket.onmessage = function(e) {{
-e.data.text().then(text => {{ if (text == \"*\") {{ window.frames['preview'].location.reload() }} else {{ window.frames['preview'].location.href = text }} }})
+	reader = new FileReader()
+	reader.onload = () => {{
+		text = reader.result
+		if (text == \"*\") {{
+			window.frames['preview'].location.reload()
+		}} else {{
+			window.frames['preview'].location.href = text
+		}}
+	}}
+	reader.readAsText(e.data)
 }}
 socket.onerror = function(e) {{
-alert(`Socket error: ${{e}}`)
+	alert(`Socket error: ${{e}}`)
 }}
 window.addEventListener('beforeunload', (event) => {{
-socket.close()
+	socket.close()
 }});
 </script>
 <style type=\"text/css\">
@@ -928,8 +942,14 @@ BODY {{
 	margin: 0;
 }}
 .banner {{
-	background: rgba(0, 0, 255, 0.2);
+	background: rgba(0, 0, 255, 0.4);
 	position: fixed;
+}}
+@media (prefers-color-scheme: dark) {{
+	BODY {{
+		background: black; /* Prevents white flash on Firefox. */
+		color: white;
+	}}
 }}
 </style>
 </head>
