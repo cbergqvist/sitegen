@@ -189,6 +189,28 @@ fn inner_main(config: &Config) {
 		}
 
 		for (group, entries) in groups {
+			let mut latest_update: Option<&String> = None;
+			for entry in &entries {
+				if let Some(date) = &entry.front_matter.date {
+					if let Some(latest) = latest_update {
+						if latest < date {
+							latest_update = Some(date);
+						}
+					} else {
+						latest_update = Some(date)
+					}
+				}
+				if let Some(date) = &entry.front_matter.edited {
+					if let Some(latest) = latest_update {
+						if latest < date {
+							latest_update = Some(date);
+						}
+					} else {
+						latest_update = Some(date)
+					}
+				}
+			}
+
 			let feed_name = config
 				.output_dir
 				.join(PathBuf::from("feeds").join(PathBuf::from(&group)))
@@ -196,7 +218,7 @@ fn inner_main(config: &Config) {
 			let header = atom::FeedHeader {
 				title: group.to_string(),
 				base_url: config.base_url.to_string(),
-				latest_update: "2001-01-19T20:10:00Z".to_string(),
+				latest_update: latest_update.cloned(),
 				author_name: config.author.to_string(),
 				author_email: config.email.to_string(),
 			};
@@ -883,16 +905,44 @@ fn write_sitemap_xml(
 			output_url.push_str(&path.to_string_lossy())
 		}
 
-		// TODO: Should add <lastmod/> based on front matter date/edited.
 		write_to_stream(
 			format!(
 				"	<url>
 		<loc>{}</loc>
-	</url>
 ",
 				output_url
 			)
 			.as_bytes(),
+			&mut file,
+		);
+
+		if let Some(front_matter) = &output_file.front_matter {
+			if let Some(date) = &front_matter.edited {
+				write_to_stream(
+					format!(
+						"		<lastmod>{}</lastmod>
+",
+						date
+					)
+					.as_bytes(),
+					&mut file,
+				);
+			} else if let Some(date) = &front_matter.date {
+				write_to_stream(
+					format!(
+						"		<lastmod>{}</lastmod>
+",
+						date
+					)
+					.as_bytes(),
+					&mut file,
+				);
+			}
+		}
+
+		write_to_stream(
+			b"	</url>
+",
 			&mut file,
 		);
 	}

@@ -720,7 +720,11 @@ fn output_template_value(
 			}
 		}
 		"date" => {
-			write_to_stream(front_matter.date.as_bytes(), &mut output_buf)
+			if let Some(date) = &front_matter.date {
+				write_to_stream(date.as_bytes(), &mut output_buf)
+			} else {
+				panic!("Requested date but none exists {}", front_matter.title)
+			}
 		}
 		"title" => {
 			write_to_stream(front_matter.title.as_bytes(), &mut output_buf)

@@ -7,7 +7,7 @@ use yaml_rust::YamlLoader;
 #[derive(Clone)]
 pub struct FrontMatter {
 	pub title: String,
-	pub date: String,
+	pub date: Option<String>,
 	pub published: bool,
 	pub edited: Option<String>,
 	pub categories: Vec<String>,
@@ -29,7 +29,7 @@ pub fn parse(
 			.unwrap_or_else(|| panic!("Failed getting input file name."))
 			.to_string_lossy()
 			.to_string(),
-		date: "1970-01-01T00:00:00Z".to_string(),
+		date: None,
 		published: true,
 		edited: None,
 		categories: Vec::new(),
@@ -48,75 +48,92 @@ pub fn parse(
 		)
 	});
 
-	// YAML Front matter present missing?
-	if first_line_len != 4 || line != "---\n" {
-		reader.seek(SeekFrom::Start(0)).unwrap_or_else(|e| {
-			panic!(
-				"Failed seeking in \"{}\": {}.",
-				input_file_path.display(),
-				e
-			)
-		});
-
-		return result;
-	}
-
-	let mut front_matter_str = String::new();
-	let mut line_count = 0;
-	loop {
-		line.clear();
-		let _line_len = reader.read_line(&mut line).unwrap_or_else(|e| {
-			panic!(
-				"Failed reading line from \"{}\": {}.",
-				input_file_path.display(),
-				e
-			)
-		});
-		if line == "---\n" {
-			result.end_position =
-				reader.seek(SeekFrom::Current(0)).unwrap_or_else(|e| {
-					panic!(
-						"Failed getting current buffer position of file {}: {}",
-						input_file_path.display(),
-						e
-					)
-				});
-			break;
-		} else {
-			line_count += 1;
-			if line_count > MAX_FRONT_MATTER_LINES {
-				panic!("Entered front matter parsing mode but failed to find end after {} lines while parsing {}.", MAX_FRONT_MATTER_LINES, input_file_path.display());
-			}
-			front_matter_str.push_str(&line);
-		}
-	}
-
-	let yaml =
-		YamlLoader::load_from_str(&front_matter_str).unwrap_or_else(|e| {
-			panic!(
-				"Failed loading YAML front matter from \"{}\": {}.",
-				input_file_path.display(),
-				e
-			)
-		});
-
-	if yaml.len() != 1 {
-		panic!("Expected only one YAML root element (Hash) in front matter of \"{}\" but got {}.", 
-			input_file_path.display(), yaml.len());
-	}
-
-	if let yaml_rust::Yaml::Hash(hash) = &yaml[0] {
-		for mapping in hash {
-			if let yaml_rust::Yaml::String(s) = mapping.0 {
-				parse_yaml_attribute(&mut result, s, mapping.1, input_file_path)
+	if first_line_len == 4 && line == "---\n" {
+		println!("Found front matter in: {}", input_file_path.display());
+		let mut front_matter_str = String::new();
+		let mut line_count = 0;
+		loop {
+			line.clear();
+			let _line_len = reader.read_line(&mut line).unwrap_or_else(|e| {
+				panic!(
+					"Failed reading line from \"{}\": {}.",
+					input_file_path.display(),
+					e
+				)
+			});
+			if line == "---\n" {
+				result.end_position =
+					reader.seek(SeekFrom::Current(0)).unwrap_or_else(|e| {
+						panic!(
+							"Failed getting current buffer position of file {}: {}",
+							input_file_path.display(),
+							e
+						)
+					});
+				break;
 			} else {
-				panic!("Expected string keys in YAML element in front matter of \"{}\" but got {:?}.", 
-						input_file_path.display(), &mapping.0)
+				line_count += 1;
+				if line_count > MAX_FRONT_MATTER_LINES {
+					panic!("Entered front matter parsing mode but failed to find end after {} lines while parsing {}.", MAX_FRONT_MATTER_LINES, input_file_path.display());
+				}
+				front_matter_str.push_str(&line);
 			}
 		}
-	} else {
-		panic!("Expected Hash as YAML root element in front matter of \"{}\" but got {:?}.", 
-			input_file_path.display(), &yaml[0])
+
+		let yaml =
+			YamlLoader::load_from_str(&front_matter_str).unwrap_or_else(|e| {
+				panic!(
+					"Failed loading YAML front matter from \"{}\": {}.",
+					input_file_path.display(),
+					e
+				)
+			});
+
+		if yaml.len() != 1 {
+			panic!("Expected only one YAML root element (Hash) in front matter of \"{}\" but got {}.", 
+				input_file_path.display(), yaml.len());
+		}
+
+		if let yaml_rust::Yaml::Hash(hash) = &yaml[0] {
+			for mapping in hash {
+				if let yaml_rust::Yaml::String(s) = mapping.0 {
+					parse_yaml_attribute(
+						&mut result,
+						s,
+						mapping.1,
+						input_file_path,
+					)
+				} else {
+					panic!("Expected string keys in YAML element in front matter of \"{}\" but got {:?}.", 
+							input_file_path.display(), &mapping.0)
+				}
+			}
+		} else {
+			panic!("Expected Hash as YAML root element in front matter of \"{}\" but got {:?}.", 
+				input_file_path.display(), &yaml[0])
+		}
+	}
+
+	if result.date.is_none() {
+		println!("No published date specified in front matter of {}, fetching from file system..", input_file_path.display());
+		let metadata = fs::metadata(input_file_path).unwrap_or_else(|e| {
+			panic!(
+				"Failed fetching metadata for {}: {}",
+				input_file_path.display(),
+				e
+			)
+		});
+
+		let modified = metadata.modified().unwrap_or_else(|e| {
+			panic!(
+				"Failed fetching modified time for {}: {}",
+				input_file_path.display(),
+				e
+			)
+		});
+
+		result.date =
+			Some(humantime::format_rfc3339_seconds(modified).to_string());
 	}
 
 	result
@@ -140,7 +157,7 @@ fn parse_yaml_attribute(
 		}
 	} else if name == "date" {
 		if let yaml_rust::Yaml::String(value) = value {
-			front_matter.date = value.clone();
+			front_matter.date = Some(value.clone());
 		} else {
 			panic!(
 				"date of \"{}\" has unexpected type {:?}",

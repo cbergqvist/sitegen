@@ -9,7 +9,7 @@ use crate::util::write_to_stream;
 pub struct FeedHeader {
 	pub title: String,
 	pub base_url: String,
-	pub latest_update: String,
+	pub latest_update: Option<String>,
 	pub author_name: String,
 	pub author_email: String,
 }
@@ -72,19 +72,34 @@ pub fn generate(
 	<title>{}</title>
 	<link rel=\"self\" href=\"{}\"/>
 	<id>{}</id>
-	<updated>{}</updated>
-	<author>
+",
+			header.title, feed_url, feed_url,
+		)
+		.as_bytes(),
+		&mut output,
+	);
+
+	if let Some(latest_update) = &header.latest_update {
+		write_to_stream(
+			format!(
+				"	<updated>{}</updated>
+",
+				latest_update,
+			)
+			.as_bytes(),
+			&mut output,
+		);
+	}
+
+	write_to_stream(
+		format!(
+			"	<author>
 		<name>{}</name>
 		<email>{}</email>
 	</author>
 
 ",
-			header.title,
-			feed_url,
-			feed_url,
-			header.latest_update,
-			header.author_name,
-			header.author_email
+			header.author_name, header.author_email
 		)
 		.as_bytes(),
 		&mut output,
@@ -93,28 +108,51 @@ pub fn generate(
 	for entry in entries {
 		let entry_url =
 			complete_url(&header.base_url, &entry.permalink.to_string_lossy());
+
 		write_to_stream(
 			format!(
 				"	<entry>
 		<title>{}</title>
-		<published>{}</published>
-		<updated>{}</updated>
-		<link href=\"{}\"/>
 		<id>{}</id>
-		<content type=\"html\"><![CDATA[
+		<link href=\"{}\"/>
+",
+				entry.front_matter.title, entry_url, entry_url
+			)
+			.as_bytes(),
+			&mut output,
+		);
+
+		if let Some(published_date) = entry.front_matter.date {
+			write_to_stream(
+				format!(
+					"		<published>{}</published>
+",
+					published_date
+				)
+				.as_bytes(),
+				&mut output,
+			);
+		}
+		if let Some(updated_date) = entry.front_matter.edited {
+			write_to_stream(
+				format!(
+					"		<updated>{}</updated>
+",
+					updated_date
+				)
+				.as_bytes(),
+				&mut output,
+			);
+		}
+
+		write_to_stream(
+			format!(
+				"		<content type=\"html\"><![CDATA[
 {}
 ]]></content>
 	</entry>
 
 ",
-				entry.front_matter.title,
-				entry.front_matter.date,
-				entry
-					.front_matter
-					.edited
-					.unwrap_or_else(|| String::from("2001-01-19T20:10:00Z")),
-				entry_url,
-				entry_url,
 				entry.html_content
 			)
 			.as_bytes(),

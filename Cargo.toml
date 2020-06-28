@@ -12,6 +12,7 @@ notify = "4.0.15"
 pulldown-cmark = "0.7.1"
 sha1 = "0.6.0"
 yaml-rust = "0.4.3"
+humantime = "2.0.1"
 
 [[bin]]
 name = "sitegen"
