@@ -733,47 +733,47 @@ fn handle_read(stream: &mut TcpStream) -> Option<ReadResult> {
 	)))
 }
 
-const DEV_PAGE_HEADER: &[u8; 1175] = b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html>
+const DEV_PAGE_HEADER: &[u8; 1151] = b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html>
 <head><script>
 // Tag on time in order to distinguish different sockets.
 let socket = new WebSocket(\"ws://\" + window.location.hostname + \":\" + window.location.port + \"/chat?now=\" + Date.now())
-socket.onopen = function(e) {{
+socket.onopen = function(e) {
 	//alert(\"[open] Connection established\")
-}}
-socket.onmessage = function(e) {{
+}
+socket.onmessage = function(e) {
 	reader = new FileReader()
-	reader.onload = () => {{
+	reader.onload = () => {
 		text = reader.result
-		if (text == \"*\") {{
+		if (text == \"*\") {
 			window.frames['preview'].location.reload()
-		}} else {{
+		} else {
 			window.frames['preview'].location.href = text
-		}}
-	}}
+		}
+	}
 	reader.readAsText(e.data)
-}}
-socket.onerror = function(e) {{
-	alert(`Socket error: ${{e}}`)
-}}
-window.addEventListener('beforeunload', (event) => {{
+}
+socket.onerror = function(e) {
+	alert(`Socket error: ${e}`)
+}
+window.addEventListener('beforeunload', (event) => {
 	socket.close()
-}});
+});
 </script>
 <style type=\"text/css\">
-BODY {{
+BODY {
 	font-family: \"Helvetica Neue\", Helvetica, Arial, sans-serif;
 	margin: 0;
-}}
-.banner {{
+}
+.banner {
 	background: rgba(0, 0, 255, 0.4);
 	position: fixed;
-}}
-@media (prefers-color-scheme: dark) {{
-	BODY {{
+}
+@media (prefers-color-scheme: dark) {
+	BODY {
 		background: black; /* Prevents white flash on Firefox. */
 		color: white;
-	}}
-}}
+	}
+}
 </style>
 </head>
 <body>
