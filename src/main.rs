@@ -171,12 +171,12 @@ fn build_initial_input_output_map(
 	// This allows us to properly detect broken links.
 	for file_name in &input_files.html {
 		let output_file =
-			markdown::compute_output_path(file_name, &input_dir, &output_dir);
+			markdown::compute_output_path(file_name, input_dir, output_dir);
 		checked_insert(file_name.clone(), output_file, &mut input_output_map)
 	}
 	for file_name in &input_files.markdown {
 		let output_file =
-			markdown::compute_output_path(file_name, &input_dir, &output_dir);
+			markdown::compute_output_path(file_name, input_dir, output_dir);
 		checked_insert(file_name.clone(), output_file, &mut input_output_map)
 	}
 	for file_name in &input_files.raw {
@@ -238,10 +238,10 @@ fn process_initial_files(
 	groups: &mut HashMap<String, Vec<atom::FeedEntry>>,
 ) {
 	for file_name in &input_files.html {
-		let _path = markdown::process_template_file_without_markdown(
+		let _path = markdown::process_template_file(
 			file_name,
-			&input_dir,
-			&output_dir,
+			input_dir,
+			output_dir,
 			&mut input_output_map,
 		);
 	}
@@ -249,8 +249,8 @@ fn process_initial_files(
 	for file_name in &input_files.markdown {
 		let generated = markdown::process_file(
 			file_name,
-			&input_dir,
-			&output_dir,
+			input_dir,
+			output_dir,
 			&mut input_output_map,
 		);
 		if let Some(group) = generated.group {
@@ -592,7 +592,7 @@ fn get_path_to_refresh(
 			// Special identifier making JavaScript reload the current page.
 			return Some(PathBuf::from("*"));
 		} else {
-			return Some(markdown::process_template_file_without_markdown(
+			return Some(markdown::process_template_file(
 				&canonical_input_path,
 				input_dir,
 				output_dir,
@@ -683,29 +683,7 @@ fn handle_read(stream: &mut TcpStream) -> Option<ReadResult> {
 	}
 }
 
-fn handle_write(
-	mut stream: TcpStream,
-	path: &PathBuf,
-	root_dir: &PathBuf,
-	start_file: Option<PathBuf>,
-) {
-	const TEXT_OUTPUT_EXTENSIONS: [&str; 3] = [
-		util::HTML_EXTENSION,
-		util::CSS_EXTENSION,
-		util::XML_EXTENSION,
-	];
-	if path.to_string_lossy() == "dev" {
-		println!("Requested path is not a file, returning index.");
-		let iframe_src = if let Some(path) = start_file {
-			let mut s = String::from(" src=\"");
-			s.push_str(&path.to_string_lossy());
-			s.push_str("\"");
-			s
-		} else {
-			String::from("")
-		};
-
-		write_to_stream_log_count(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html>
+const DEV_PAGE_HEADER: &[u8; 1175] = b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html>
 <head><script>
 // Tag on time in order to distinguish different sockets.
 let socket = new WebSocket(\"ws://\" + window.location.hostname + \":\" + window.location.port + \"/chat?now=\" + Date.now())
@@ -750,9 +728,36 @@ BODY {{
 </head>
 <body>
 <div class=\"banner\">Preview, save Markdown file to disk for live reload:</div>
-<iframe name=\"preview\"{} style=\"border: 0; margin: 0; width: 100%; height: 100%\"></iframe>
-</body>
-</html>\r\n", iframe_src).as_bytes(), &mut stream);
+";
+const DEV_PAGE_FOOTER: &[u8; 17] = b"</body>
+</html>\r\n";
+
+fn handle_write(
+	mut stream: TcpStream,
+	path: &PathBuf,
+	root_dir: &PathBuf,
+	start_file: Option<PathBuf>,
+) {
+	const TEXT_OUTPUT_EXTENSIONS: [&str; 3] = [
+		util::HTML_EXTENSION,
+		util::CSS_EXTENSION,
+		util::XML_EXTENSION,
+	];
+	if path.to_string_lossy() == "dev" {
+		println!("Requested path is not a file, returning index.");
+		let iframe_src = if let Some(path) = start_file {
+			let mut s = String::from(" src=\"");
+			s.push_str(&path.to_string_lossy());
+			s.push_str("\"");
+			s
+		} else {
+			String::from("")
+		};
+
+		write_to_stream_log_count(DEV_PAGE_HEADER, &mut stream);
+		write_to_stream_log_count(format!("<iframe name=\"preview\"{} style=\"border: 0; margin: 0; width: 100%; height: 100%\"></iframe>
+", iframe_src).as_bytes(), &mut stream);
+		write_to_stream_log_count(DEV_PAGE_FOOTER, &mut stream);
 	} else {
 		let mut full_path = root_dir.join(&path);
 		if !full_path.is_file() {

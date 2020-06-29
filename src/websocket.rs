@@ -102,6 +102,8 @@ pub fn handle_stream(
 	}
 }
 
+// Allowing more lines to keep state machine cohesive.
+#[allow(clippy::too_many_lines)]
 fn read_stream(
 	mut stream: &mut TcpStream,
 	mut read_state: ReadState,

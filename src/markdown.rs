@@ -269,7 +269,7 @@ pub fn process_file(
 	}
 }
 
-pub fn process_template_file_without_markdown(
+pub fn process_template_file(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,

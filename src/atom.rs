@@ -62,7 +62,7 @@ pub fn generate(
 			author_email: email.to_string(),
 		};
 
-		generate_feed(&feed_name, &header, entries, &output_dir);
+		generate_feed(&feed_name, &header, entries, output_dir);
 	}
 }
 
@@ -146,7 +146,7 @@ fn generate_feed(
 	);
 
 	for entry in entries {
-		generate_entry(&entry, header, &mut output);
+		generate_entry(entry, header, &mut output);
 	}
 
 	write_to_stream(b"</feed>", &mut output);

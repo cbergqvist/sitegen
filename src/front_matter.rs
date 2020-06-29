@@ -114,43 +114,56 @@ pub fn parse(
 		}
 	}
 
-	if (result.date.is_none() && result.edited.is_none())
-		|| result.date.as_deref() == Some("auto")
-		|| result.edited.as_deref() == Some("auto")
-	{
-		println!("Published or edited dates not specified or set to \"auto\" in front matter of {}, fetching modified date from file system..", input_file_path.display());
-		let metadata = fs::metadata(input_file_path).unwrap_or_else(|e| {
-			panic!(
-				"Failed fetching metadata for {}: {}",
-				input_file_path.display(),
-				e
-			)
-		});
+	fixup_date(input_file_path, &mut result);
 
-		let modified = metadata.modified().unwrap_or_else(|e| {
-			panic!(
-				"Failed fetching modified time for {}: {}",
-				input_file_path.display(),
-				e
-			)
-		});
+	result
+}
 
-		let fs_time =
-			Some(humantime::format_rfc3339_seconds(modified).to_string());
-
-		if result.date.as_deref() == Some("auto") {
-			result.date = fs_time;
-			if result.edited.is_some() {
-				panic!("Can't have date set to \"auto\" while also specifying edited in front matter of {}", input_file_path.display());
+fn fixup_date(input_file_path: &PathBuf, front_matter: &mut FrontMatter) {
+	if let Some(date) = &front_matter.date {
+		if date != "auto" {
+			if let Some(edited) = &front_matter.edited {
+				if edited != "auto" {
+					// If neither date nor edited are set to "auto", bail.
+					return;
+				}
+			} else {
+				// If date is not set to "auto", and edited is unset, bail.
+				return;
 			}
-		} else if (result.date.is_none() && result.edited.is_none())
-			|| result.edited.as_deref() == Some("auto")
-		{
-			result.edited = fs_time;
 		}
 	}
 
-	result
+	println!("Published or edited dates not specified or set to \"auto\" in front matter of {}, fetching modified date from file system..", input_file_path.display());
+
+	let metadata = fs::metadata(input_file_path).unwrap_or_else(|e| {
+		panic!(
+			"Failed fetching metadata for {}: {}",
+			input_file_path.display(),
+			e
+		)
+	});
+
+	let modified = metadata.modified().unwrap_or_else(|e| {
+		panic!(
+			"Failed fetching modified time for {}: {}",
+			input_file_path.display(),
+			e
+		)
+	});
+
+	let fs_time = Some(humantime::format_rfc3339_seconds(modified).to_string());
+
+	if front_matter.date.as_deref() == Some("auto") {
+		front_matter.date = fs_time;
+		if front_matter.edited.is_some() {
+			panic!("Can't have date set to \"auto\" while also specifying edited in front matter of {}", input_file_path.display());
+		}
+	} else if (front_matter.date.is_none() && front_matter.edited.is_none())
+		|| front_matter.edited.as_deref() == Some("auto")
+	{
+		front_matter.edited = fs_time;
+	}
 }
 
 fn parse_yaml_attribute(
