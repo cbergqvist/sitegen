@@ -22,6 +22,9 @@ mod markdown;
 mod util;
 mod websocket;
 
+#[cfg(test)]
+mod tests;
+
 use crate::config::{Config, ConfigArgs};
 use markdown::OutputFile;
 use util::{write_to_stream, write_to_stream_log_count, Refresh};

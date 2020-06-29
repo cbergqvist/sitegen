@@ -188,16 +188,26 @@ pub fn process_file(
 
 	let output_file_path = output_file.path;
 
-	let mut markdown_content = String::new();
-	let _size = input_file
-		.read_to_string(&mut markdown_content)
-		.unwrap_or_else(|e| {
-			panic!(
-				"Failed reading Markdown content from \"{}\": {}.",
-				&input_file_path.display(),
-				e
-			)
-		});
+	let mut processed_markdown_content = BufWriter::new(Vec::new());
+
+	process_liquid_content(
+		input_file_path,
+		&mut processed_markdown_content,
+		&front_matter,
+		None,
+		input_file_path,
+		&mut input_file,
+		root_input_dir,
+		root_output_dir,
+		input_output_map,
+	);
+
+	let markdown_content = String::from_utf8_lossy(
+		&processed_markdown_content
+			.into_inner()
+			.unwrap_or_else(|e| panic!("into_inner() failed: {}", e)),
+	)
+	.to_string();
 
 	let mut output_buf = BufWriter::new(Vec::new());
 	let template_path_result =
@@ -216,7 +226,7 @@ pub fn process_file(
 		}),
 	);
 
-	write_html_page(
+	process_liquid_content(
 		&output_file_path,
 		&mut output_buf,
 		&front_matter,
@@ -299,7 +309,7 @@ pub fn process_template_file_without_markdown(
 
 	let mut output_buf = BufWriter::new(Vec::new());
 
-	write_html_page(
+	process_liquid_content(
 		&output_file_path,
 		&mut output_buf,
 		&front_matter,
@@ -450,19 +460,20 @@ pub fn compute_output_path(
 //
 // Allowing more lines to keep state machine cohesive.
 #[allow(clippy::too_many_lines)]
-fn write_html_page(
+pub fn process_liquid_content<T: Read>(
 	output_file_path: &PathBuf,
 	mut output_buf: &mut BufWriter<Vec<u8>>,
 	front_matter: &FrontMatter,
 	html_content: Option<&str>,
-	template_file_path: &PathBuf,
-	template_file: &mut BufReader<fs::File>,
+	input_file_path: &PathBuf,
+	input_file: &mut BufReader<T>,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
 	input_output_map: &HashMap<PathBuf, OutputFile>,
 ) {
+	#[derive(Debug)]
 	enum State {
-		JustHtml,
+		RegularContent,
 		LastOpenBracket,
 		ValueStart,
 		ValueObject,
@@ -475,7 +486,7 @@ fn write_html_page(
 		WaitingForCloseBracket,
 	}
 
-	let mut state = State::JustHtml;
+	let mut state = State::RegularContent;
 	let mut buf = [0_u8; 64 * 1024];
 	let mut line_number = 1;
 	let mut column_number = 1;
@@ -484,10 +495,10 @@ fn write_html_page(
 	let mut function = Vec::new();
 	let mut parameter = Vec::new();
 	loop {
-		let size = template_file.read(&mut buf).unwrap_or_else(|e| {
+		let size = input_file.read(&mut buf).unwrap_or_else(|e| {
 			panic!(
 				"Failed reading from template file {}: {}",
-				template_file_path.display(),
+				input_file_path.display(),
 				e
 			)
 		});
@@ -498,20 +509,20 @@ fn write_html_page(
 		for &byte in &buf[0..size] {
 			if byte == b'\n' {
 				match state {
-					State::JustHtml => { write_to_stream(&[byte], output_buf); }
+					State::RegularContent => { write_to_stream(&[byte], output_buf); }
 					State::LastOpenBracket => {
 						write_to_stream(b"{\n", output_buf);
-						state = State::JustHtml
+						state = State::RegularContent
 					}
-					State::ValueObject => panic!("Unexpected newline while reading value object identifier at {}:{}:{}.", template_file_path.display(), line_number, column_number),
+					State::ValueObject => panic!("Unexpected newline while reading value object identifier at {}:{}:{}.", input_file_path.display(), line_number, column_number),
 					State::ValueField => {
 						output_template_value(&mut output_buf, &mut object, &mut field, front_matter, html_content);
 						state = State::ValueEnd
 					}
-					State::WaitingForCloseBracket => panic!("Expected close bracket but got newline at {}:{}:{}.", template_file_path.display(), line_number, column_number),
-					State::TagFunction => panic!("Unexpected newline in the middle of function at {}:{}:{}.", template_file_path.display(), line_number, column_number),
+					State::WaitingForCloseBracket => panic!("Expected close bracket but got newline at {}:{}:{}.", input_file_path.display(), line_number, column_number),
+					State::TagFunction => panic!("Unexpected newline in the middle of function at {}:{}:{}.", input_file_path.display(), line_number, column_number),
 					State::TagParameter => {
-						run_function(output_file_path, &mut output_buf, &mut function, &mut parameter, front_matter, html_content, template_file_path, root_input_dir, root_output_dir, input_output_map);
+						run_function(output_file_path, &mut output_buf, &mut function, &mut parameter, front_matter, html_content, input_file_path, root_input_dir, root_output_dir, input_output_map);
 						state = State::TagEnd
 					}
 					State::ValueStart | State::ValueEnd | State::TagStart | State::TagEnd => {}
@@ -520,7 +531,7 @@ fn write_html_page(
 				column_number = 1;
 			} else {
 				match state {
-					State::JustHtml => {
+					State::RegularContent => {
 						match byte {
 							b'{' => state = State::LastOpenBracket,
 							_ => write_to_stream(&[byte], output_buf)
@@ -532,12 +543,12 @@ fn write_html_page(
 							b'%' => state = State::TagStart,
 							_ => {
 								write_to_stream(&[b'{'], output_buf);
-								state = State::JustHtml;
+								state = State::RegularContent;
 							}
 						}
 					}
 					State::ValueStart => match byte {
-						b'{' => panic!("Unexpected open bracket while in template mode at {}:{}:{}.", template_file_path.display(), line_number, column_number),
+						b'{' => panic!("Unexpected open bracket while in template mode at {}:{}:{}.", input_file_path.display(), line_number, column_number),
 						b' ' | b'\t' => {},
 						_ => {
 							object.push(byte);
@@ -553,7 +564,7 @@ fn write_html_page(
 					}
 					State::ValueField => {
 						match byte {
-							b'.' => panic!("Additional dot in template identifier at {}:{}:{}.", template_file_path.display(), line_number, column_number),
+							b'.' => panic!("Additional dot in template identifier at {}:{}:{}.", input_file_path.display(), line_number, column_number),
 							b'}' => state = State::WaitingForCloseBracket,
 							b' ' | b'\t' => {
 								output_template_value(&mut output_buf, &mut object, &mut field, front_matter, html_content);
@@ -566,12 +577,12 @@ fn write_html_page(
 						match byte {
 							b'}' => state = State::WaitingForCloseBracket,
 							b' ' | b'\t' => {}
-							_ => panic!("Unexpected non-whitespace character at {}:{}:{}.", template_file_path.display(), line_number, column_number)
+							_ => panic!("Unexpected non-whitespace character at {}:{}:{}.", input_file_path.display(), line_number, column_number)
 						}
 					}
 					State::TagStart => {
 						match byte {
-							b'%' => panic!("Unexpected % following tag start at {}:{}:{}.", template_file_path.display(), line_number, column_number),
+							b'%' => panic!("Unexpected % following tag start at {}:{}:{}.", input_file_path.display(), line_number, column_number),
 							b' ' | b'\t' => {}
 							_ => {
 								function.push(byte);
@@ -590,9 +601,12 @@ fn write_html_page(
 						match byte {
 							b' ' | b'\t' => {
 								if !parameter.is_empty() {
-									run_function(output_file_path, &mut output_buf, &mut function, &mut parameter, front_matter, html_content, template_file_path, root_input_dir, root_output_dir, input_output_map);
+									run_function(output_file_path, &mut output_buf, &mut function, &mut parameter, front_matter, html_content, input_file_path, root_input_dir, root_output_dir, input_output_map);
 									state = State::TagEnd;
 								}
+							}
+							b'%' => {
+								panic!("Unexpected end of parameter at {}:{}:{}.", input_file_path.display(), line_number, column_number)
 							}
 							_ => parameter.push(byte)
 
@@ -602,20 +616,25 @@ fn write_html_page(
 						match byte {
 							b'%' => state = State::WaitingForCloseBracket,
 							b' ' | b'\t' => {}
-							_ => panic!("Unexpected non-whitespace character at {}:{}:{}.", template_file_path.display(), line_number, column_number)
+							_ => panic!("Unexpected non-whitespace character at {}:{}:{}.", input_file_path.display(), line_number, column_number)
 						}
 					}
 					State::WaitingForCloseBracket => {
 						if byte == b'}' {
-							state = State::JustHtml;
+							state = State::RegularContent;
 						} else {
-							panic!("Missing double close-bracket at {}:{}:{}.", template_file_path.display(), line_number, column_number)
+							panic!("Missing double close-bracket at {}:{}:{}.", input_file_path.display(), line_number, column_number)
 						}
 					}
 				}
 				column_number += 1
 			}
 		}
+	}
+
+	match state {
+		State::RegularContent => {}
+		_ => panic!("Content of {} ended while still in state: {:?}", input_file_path.display(), state),
 	}
 }
 
@@ -835,7 +854,7 @@ fn include_file(
 		template_file_path.display()
 	);
 
-	write_html_page(
+	process_liquid_content(
 		output_file_path,
 		&mut output_buf,
 		front_matter,
