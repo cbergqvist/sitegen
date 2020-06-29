@@ -808,64 +808,66 @@ fn handle_write(
 		write_to_stream_log_count(format!("<iframe name=\"preview\"{} style=\"border: 0; margin: 0; width: 100%; height: 100%\"></iframe>
 ", iframe_src).as_bytes(), &mut stream);
 		write_to_stream_log_count(DEV_PAGE_FOOTER, &mut stream);
-	} else {
-		let mut full_path = root_dir.join(&path);
-		if !full_path.is_file() {
-			let with_index = full_path.join("index.html");
-			if with_index.is_file() {
-				full_path = with_index;
-			}
-		}
-		println!("Attempting to open: {}", full_path.display());
-		match fs::File::open(&full_path) {
-			Ok(mut input_file) => {
-				if let Some(extension) = full_path.extension() {
-					let extension = extension.to_string_lossy();
-					if TEXT_OUTPUT_EXTENSIONS.iter().any(|&ext| ext == extension) {
-						write_to_stream_log_count(format!("HTTP/1.1 200 OK\r\nContent-Type: text/{}; charset=UTF-8\r\n\r\n", extension).as_bytes(), &mut stream);
-						let mut buf = [0_u8; 64 * 1024];
-						loop {
-							let size =
-								input_file.read(&mut buf).unwrap_or_else(|e| {
-									panic!(
-										"Failed reading from {}: {}",
-										full_path.display(),
-										e
-									);
-								});
-							if size < 1 {
-								break;
-							}
+		return;
+	}
 
-							write_to_stream_log_count(&buf[0..size], &mut stream);
-						}
-					} else {
-						write_to_stream_log_count(
-							format!("HTTP/1.1 500 Error\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>Unrecognized extension: {}</body></html>\r\n", full_path.display()).as_bytes(),
-							&mut stream,
-						)
-					}
-				} else {
-						write_to_stream_log_count(
-							format!("HTTP/1.1 500 Error\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>Missing extension: {}</body></html>\r\n", full_path.display()).as_bytes(),
-							&mut stream,
-						)
-				}
-			}
-			Err(e) => {
-				match e.kind() {
-					ErrorKind::NotFound => write_to_stream_log_count(
-						format!("HTTP/1.1 404 Not found\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>Couldn't find: {}</body></html>\r\n", full_path.display()).as_bytes(),
-						&mut stream,
-					),
-					_ => write_to_stream_log_count(
-						format!("HTTP/1.1 500 Error\r\n{}", e)
-							.as_bytes(),
-						&mut stream,
-					)
-				}
-			}
+	let mut full_path = root_dir.join(&path);
+	if !full_path.is_file() {
+		let with_index = full_path.join("index.html");
+		if with_index.is_file() {
+			full_path = with_index;
 		}
+	}
+
+	println!("Attempting to open: {}", full_path.display());
+	let mut input_file = match fs::File::open(&full_path) {
+		Ok(input) => input,
+		Err(e) => {
+			match e.kind() {
+				ErrorKind::NotFound => write_to_stream_log_count(
+					format!("HTTP/1.1 404 Not found\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>Couldn't find: {}</body></html>\r\n", full_path.display()).as_bytes(),
+					&mut stream,
+				),
+				_ => write_to_stream_log_count(
+					format!("HTTP/1.1 500 Error\r\n{}", e)
+						.as_bytes(),
+					&mut stream,
+				)
+			}
+			return;
+		}
+	};
+
+	if let Some(extension) = full_path.extension() {
+		let extension = extension.to_string_lossy();
+		if TEXT_OUTPUT_EXTENSIONS.iter().any(|&ext| ext == extension) {
+			write_to_stream_log_count(format!("HTTP/1.1 200 OK\r\nContent-Type: text/{}; charset=UTF-8\r\n\r\n", extension).as_bytes(), &mut stream);
+			let mut buf = [0_u8; 64 * 1024];
+			loop {
+				let size = input_file.read(&mut buf).unwrap_or_else(|e| {
+					panic!(
+						"Failed reading from {}: {}",
+						full_path.display(),
+						e
+					);
+				});
+				if size < 1 {
+					break;
+				}
+
+				write_to_stream_log_count(&buf[0..size], &mut stream);
+			}
+		} else {
+			write_to_stream_log_count(
+				format!("HTTP/1.1 500 Error\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>Unrecognized extension: {}</body></html>\r\n", full_path.display()).as_bytes(),
+				&mut stream,
+			)
+		}
+	} else {
+		write_to_stream_log_count(
+			format!("HTTP/1.1 500 Error\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>Missing extension: {}</body></html>\r\n", full_path.display()).as_bytes(),
+			&mut stream,
+		)
 	}
 }
 
