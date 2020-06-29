@@ -41,7 +41,7 @@ impl fmt::Display for StringArg {
 
 // Not using the otherwise brilliant CLAP crate since I detest string matching
 // args to get their values.
-pub struct ConfigArgs {
+pub struct Args {
 	pub author: StringArg,
 	pub base_url: StringArg,
 	pub email: StringArg,
@@ -64,7 +64,7 @@ pub struct Config {
 	pub watch: bool,
 }
 
-impl ConfigArgs {
+impl Args {
 	pub fn new() -> Self {
 		Self {
 			author: StringArg {

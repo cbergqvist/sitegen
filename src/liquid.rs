@@ -441,12 +441,14 @@ fn check_and_emit_link(
 			}),
 	);
 
-	let mut append_trailing_slash = false;
-	if linked_output_path_stripped.file_name() == Some(OsStr::new("index.html"))
+	let append_trailing_slash = if linked_output_path_stripped.file_name()
+		== Some(OsStr::new("index.html"))
 	{
 		linked_output_path_stripped.pop();
-		append_trailing_slash = true;
-	}
+		true
+	} else {
+		false
+	};
 
 	let mut linked_output_path_stripped_str =
 		linked_output_path_stripped.to_string_lossy().to_string();

@@ -26,7 +26,6 @@ mod websocket;
 #[cfg(test)]
 mod tests;
 
-use crate::config::{Config, ConfigArgs};
 use markdown::OutputFile;
 use util::{write_to_stream, write_to_stream_log_count, Refresh};
 
@@ -36,7 +35,7 @@ enum ReadResult {
 }
 
 fn main() {
-	let mut args = ConfigArgs::new();
+	let mut args = config::Args::new();
 	args.parse(env::args());
 
 	if args.help.value {
@@ -63,7 +62,7 @@ Arguments:"
 	inner_main(&args.values())
 }
 
-fn inner_main(config: &Config) {
+fn inner_main(config: &config::Config) {
 	let input_files = markdown::get_files(&config.input_dir);
 	let mut input_output_map = HashMap::new();
 
@@ -133,7 +132,7 @@ fn inner_main(config: &Config) {
 		}
 
 		let mut groups = HashMap::new();
-		for (_, output_file) in &input_output_map {
+		for output_file in input_output_map.values() {
 			if let Some(group) = &output_file.group {
 				match groups.entry(group.to_string()) {
 					Entry::Occupied(..) => {}
@@ -144,7 +143,7 @@ fn inner_main(config: &Config) {
 			}
 		}
 
-		for (group, _) in &groups {
+		for group in groups.keys() {
 			let xml_file = PathBuf::from("feeds")
 				.join(PathBuf::from(group).with_extension("xml"));
 			checked_insert(
@@ -841,7 +840,7 @@ fn handle_client(
 	}
 }
 
-fn write_robots_txt(output_dir: &PathBuf, sitemap_url: &String) {
+fn write_robots_txt(output_dir: &PathBuf, sitemap_url: &str) {
 	let file_name = output_dir.join(PathBuf::from("robots.txt"));
 	let mut file = fs::File::create(&file_name).unwrap_or_else(|e| {
 		panic!("Failed creating {}: {}", file_name.display(), e)
@@ -868,7 +867,7 @@ Sitemap: {}
 
 fn write_sitemap_xml(
 	output_dir: &PathBuf,
-	base_url: &String,
+	base_url: &str,
 	input_output_map: &HashMap<PathBuf, OutputFile>,
 ) -> String {
 	let official_file_name = PathBuf::from("sitemap.xml");
@@ -885,7 +884,7 @@ fn write_sitemap_xml(
 
 	let html_extension = OsStr::new(util::HTML_EXTENSION);
 
-	for (_, output_file) in input_output_map {
+	for output_file in input_output_map.values() {
 		if output_file.path.extension() != Some(html_extension) {
 			continue;
 		}
@@ -902,7 +901,7 @@ fn write_sitemap_xml(
 						e
 					)
 				});
-		let mut output_url = base_url.clone();
+		let mut output_url = base_url.to_string();
 		if path.file_name() == Some(OsStr::new("index.html")) {
 			output_url.push_str(&path.with_file_name("").to_string_lossy())
 		} else {
@@ -962,7 +961,7 @@ fn write_sitemap_xml(
 	});
 	println!("Wrote {}.", file_name.display());
 
-	let mut result = base_url.clone();
+	let mut result = base_url.to_string();
 	result.push_str(&official_file_name.to_string_lossy());
 	result
 }
