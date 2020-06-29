@@ -445,7 +445,7 @@ fn watch_fs(
 					notify::DebouncedEvent::Write(path)
 					| notify::DebouncedEvent::Create(path) => {
 						let path_to_communicate = get_path_to_refresh(
-							&path,
+							&make_relative(&path, input_dir),
 							input_dir,
 							output_dir,
 							&mut input_output_map,
@@ -486,131 +486,158 @@ fn get_path_to_refresh(
 	let html_extension = OsStr::new(util::HTML_EXTENSION);
 	let markdown_extension = OsStr::new(util::MARKDOWN_EXTENSION);
 
-	let canonical_input_path =
-		input_file_path.canonicalize().unwrap_or_else(|e| {
-			panic!(
-				"Canonicalization of {} failed: {}",
-				input_file_path.display(),
-				e
-			)
-		});
-	if canonical_input_path.extension() == Some(markdown_extension) {
-		match fs::create_dir(&output_dir) {
-			Ok(_) => {}
-			Err(e) => {
-				if e.kind() != ErrorKind::AlreadyExists {
-					panic!(
-						"Failed creating \"{}\": {}.",
-						output_dir.display(),
-						e
-					)
-				}
-			}
+	fs::create_dir(&output_dir).unwrap_or_else(|e| {
+		if e.kind() != ErrorKind::AlreadyExists {
+			panic!("Failed creating \"{}\": {}.", output_dir.display(), e)
 		}
+	});
 
-		return Some(
+	if input_file_path.extension() == Some(markdown_extension) {
+		Some(
 			markdown::process_file(
-				&canonical_input_path,
+				input_file_path,
 				input_dir,
 				output_dir,
 				input_output_map,
 			)
 			.path,
-		);
-	} else if canonical_input_path.extension() == Some(html_extension) {
-		let parent_path = canonical_input_path.parent().unwrap_or_else(|| {
-			panic!(
-				"Path without a parent directory?: {}",
-				canonical_input_path.display()
-			)
-		});
-		let parent_path_file_name =
-			parent_path.file_name().unwrap_or_else(|| {
-				panic!("Missing file name in path: {}", parent_path.display())
-			});
-		if parent_path_file_name == "_layouts" {
-			let template_file_stem =
-				canonical_input_path.file_stem().unwrap_or_else(|| {
-					panic!(
-						"Missing file stem in path: {}",
-						canonical_input_path.display()
-					)
-				});
-			let mut dir_name = OsString::from(template_file_stem);
-			dir_name.push("s");
-			let markdown_dir = input_dir.join(dir_name);
-			// If for example the post.html template was changed, try to get all
-			// markdown files under /posts/.
-			let files = if markdown_dir.exists() {
-				markdown::get_files(&markdown_dir)
-			} else {
-				markdown::InputFileCollection::new()
-			};
-
-			// If we didn't find any markdown files, assume that the template
-			// file just exists for the sake of a single markdown file.
-			if files.is_empty() {
-				let templated_file = input_dir
-					.join(template_file_stem)
-					.with_extension(markdown_extension);
-				if templated_file.exists() {
-					return Some(
-						markdown::process_file(
-							&templated_file,
-							input_dir,
-							output_dir,
-							input_output_map,
-						)
-						.path,
-					);
-				}
-			} else {
-				let mut output_files = Vec::new();
-				for file_name in &files.markdown {
-					output_files.push(markdown::process_file(
-						file_name,
-						input_dir,
-						output_dir,
-						input_output_map,
-					))
-				}
-
-				return output_files.first().map(|g| g.path.clone());
-			}
-		} else if parent_path_file_name == "_includes" {
-			// Since we don't track what includes what, just do a full refresh.
-			let files = markdown::get_files(input_dir);
-			for file_name in &files.markdown {
-				markdown::process_file(
-					file_name,
-					input_dir,
-					output_dir,
-					input_output_map,
-				);
-			}
-
-			// Special identifier making JavaScript reload the current page.
-			return Some(PathBuf::from("*"));
-		} else {
-			return Some(markdown::process_template_file(
-				&canonical_input_path,
-				input_dir,
-				output_dir,
-				input_output_map,
-			));
-		}
-	} else if canonical_input_path.extension() == Some(css_extension) {
+		)
+	} else if input_file_path.extension() == Some(html_extension) {
+		handle_html_updated(
+			input_file_path,
+			input_dir,
+			output_dir,
+			input_output_map,
+		)
+	} else if input_file_path.extension() == Some(css_extension) {
 		util::copy_files_with_prefix(
-			&[canonical_input_path],
+			&[input_file_path.clone()],
 			input_dir,
 			output_dir,
 		);
 		// TODO: input_output_map
 		// Special identifier making JavaScript reload the current page.
-		return Some(PathBuf::from("*"));
+		Some(PathBuf::from("*"))
+	} else {
+		None
+	}
+}
+
+fn make_relative(input_file_path: &PathBuf, input_dir: &PathBuf) -> PathBuf {
+	assert!(input_file_path.is_absolute());
+	if input_dir.is_absolute() {
+		panic!(
+			"Don't currently handle absolute input dirs: {}",
+			input_dir.display()
+		);
 	}
 
-	None
+	let absolute_input_dir = input_dir.canonicalize().unwrap_or_else(|e| {
+		panic!("Canonicalization of {} failed: {}", input_dir.display(), e)
+	});
+
+	input_dir.join(
+		input_file_path
+			.strip_prefix(&absolute_input_dir)
+			.unwrap_or_else(|e| {
+				panic!(
+					"Failed stripping prefix {} from {}: {}",
+					absolute_input_dir.display(),
+					input_file_path.display(),
+					e
+				)
+			}),
+	)
+}
+
+fn handle_html_updated(
+	input_file_path: &PathBuf,
+	input_dir: &PathBuf,
+	output_dir: &PathBuf,
+	input_output_map: &mut HashMap<PathBuf, OutputFile>,
+) -> Option<PathBuf> {
+	let parent_path = input_file_path.parent().unwrap_or_else(|| {
+		panic!(
+			"Path without a parent directory?: {}",
+			input_file_path.display()
+		)
+	});
+	let parent_path_file_name = parent_path.file_name().unwrap_or_else(|| {
+		panic!("Missing file name in path: {}", parent_path.display())
+	});
+	if parent_path_file_name == "_layouts" {
+		let template_file_stem =
+			input_file_path.file_stem().unwrap_or_else(|| {
+				panic!(
+					"Missing file stem in path: {}",
+					input_file_path.display()
+				)
+			});
+		let mut dir_name = OsString::from(template_file_stem);
+		dir_name.push("s");
+		let markdown_dir = input_dir.join(dir_name);
+		// If for example the post.html template was changed, try to get all
+		// markdown files under /posts/.
+		let files_using_layout = if markdown_dir.exists() {
+			markdown::get_files(&markdown_dir)
+		} else {
+			markdown::InputFileCollection::new()
+		};
+
+		// If we didn't find any markdown files, assume that the template
+		// file just exists for the sake of a single markdown file.
+		if files_using_layout.is_empty() {
+			let templated_file = input_dir
+				.join(template_file_stem)
+				.with_extension(OsStr::new(util::MARKDOWN_EXTENSION));
+			if templated_file.exists() {
+				Some(
+					markdown::process_file(
+						&templated_file,
+						input_dir,
+						output_dir,
+						input_output_map,
+					)
+					.path,
+				)
+			} else {
+				None
+			}
+		} else {
+			let mut output_files = Vec::new();
+			for file_name in &files_using_layout.markdown {
+				output_files.push(markdown::process_file(
+					file_name,
+					input_dir,
+					output_dir,
+					input_output_map,
+				))
+			}
+
+			output_files.first().map(|g| g.path.clone())
+		}
+	} else if parent_path_file_name == "_includes" {
+		// Since we don't track what includes what, just do a full refresh.
+		let files = markdown::get_files(input_dir);
+		for file_name in &files.markdown {
+			markdown::process_file(
+				file_name,
+				input_dir,
+				output_dir,
+				input_output_map,
+			);
+		}
+
+		// Special identifier making JavaScript reload the current page.
+		Some(PathBuf::from("*"))
+	} else {
+		Some(markdown::process_template_file(
+			input_file_path,
+			input_dir,
+			output_dir,
+			input_output_map,
+		))
+	}
 }
 
 fn handle_read(stream: &mut TcpStream) -> Option<ReadResult> {

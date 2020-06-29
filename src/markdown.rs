@@ -154,7 +154,6 @@ pub fn process_file(
 ) -> GeneratedFile {
 	let timer = Instant::now();
 
-	// TODO: Inserting different format?
 	let output_file = input_output_map
 		.entry(input_file_path.clone())
 		.or_insert_with(|| {
@@ -277,7 +276,6 @@ pub fn process_template_file(
 ) -> PathBuf {
 	let timer = Instant::now();
 
-	// TODO: Inserting different format?
 	let output_file = input_output_map
 		.entry(input_file_path.clone())
 		.or_insert_with(|| {
