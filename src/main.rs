@@ -670,72 +670,67 @@ fn handle_html_updated(
 
 fn handle_read(stream: &mut TcpStream) -> Option<ReadResult> {
 	let mut buf = [0_u8; 4096];
-	match stream.read(&mut buf) {
-		Ok(size) => {
-			if size == buf.len() {
-				panic!("Request sizes as large as {} are not supported.", size)
-			} else if size == 0 {
-				// Seen this occur a few times with zero-filled buf.
-				// Not sure about the cause of it.
-				println!("Zero-size TCP stream read()-result. Ignoring.");
-				return None;
-			}
+	let size = stream
+		.read(&mut buf)
+		.unwrap_or_else(|e| panic!("WARNING: Unable to read stream: {}", e));
 
-			let req_str = String::from_utf8_lossy(&buf);
-			println!("Request (size: {}):\n{}", size, req_str);
-			let mut lines = req_str.lines();
-			if let Some(first_line) = lines.next() {
-				let mut components = first_line.split(' ');
-				if let Some(method) = components.next() {
-					if method == "GET" {
-						if let Some(path) = components.next() {
-							let mut websocket_key = None;
-							for line in lines {
-								let mut components = line.split(' ');
-								if let Some(component) = components.next() {
-									if component == "Sec-WebSocket-Key:" {
-										websocket_key = components.next();
-									} else if component
-										== "Sec-WebSocket-Protocol:"
-									{
-										let protocols: String =
-											components.collect::<String>();
-										panic!("We don't handle protocols correctly yet: {}", protocols)
-									}
-								}
-							}
+	if size == buf.len() {
+		panic!("Request sizes as large as {} are not supported.", size)
+	} else if size == 0 {
+		// Seen this occur a few times with zero-filled buf.
+		// Not sure about the cause of it.
+		println!("Zero-size TCP stream read()-result. Ignoring.");
+		return None;
+	}
 
-							if let Some(key) = websocket_key {
-								return Some(ReadResult::WebSocket(
-									key.to_string(),
-								));
-							}
+	let req_str = String::from_utf8_lossy(&buf);
+	println!("Request (size: {}):\n{}", size, req_str);
+	let mut lines = req_str.lines();
+	let first_line = lines
+		.next()
+		.unwrap_or_else(|| panic!("Missing lines in HTTP request."));
+	let mut components = first_line.split(' ');
+	let method = components.next().unwrap_or_else(|| {
+		panic!(
+			"Missing components in first HTTP request line: {}",
+			first_line
+		)
+	});
+	if method != "GET" {
+		panic!("Unsupported method \"{}\", line: {}", method, first_line)
+	}
 
-							Some(ReadResult::GetRequest(PathBuf::from(
-								// Strip leading root slash.
-								&path[1..],
-							)))
-						} else {
-							panic!("Missing path in: {}", first_line)
-						}
-					} else {
-						panic!(
-							"Unsupported method \"{}\", line: {}",
-							method, first_line
-						)
-					}
-				} else {
-					panic!(
-						"Missing components in first HTTP request line: {}",
-						first_line
-					)
-				}
-			} else {
-				panic!("Missing lines in HTTP request.")
+	let path = components
+		.next()
+		.unwrap_or_else(|| panic!("Missing path in: {}", first_line));
+
+	let mut websocket_key = None;
+	for line in lines {
+		let mut components = line.split(' ');
+		if let Some(component) = components.next() {
+			if component == "Sec-WebSocket-Key:" {
+				websocket_key = components.next();
+			} else if component == "Sec-WebSocket-Protocol:" {
+				let protocols: String = components.collect::<String>();
+				panic!("We don't handle protocols correctly yet: {}", protocols)
 			}
 		}
-		Err(e) => panic!("WARNING: Unable to read stream: {}", e),
 	}
+
+	if let Some(key) = websocket_key {
+		return Some(ReadResult::WebSocket(key.to_string()));
+	}
+
+	if !path.starts_with('/') {
+		panic!(
+			"Expected path to start with leading slash, but got: {}",
+			path
+		)
+	}
+	Some(ReadResult::GetRequest(PathBuf::from(
+		// Strip leading root slash.
+		&path[1..],
+	)))
 }
 
 const DEV_PAGE_HEADER: &[u8; 1175] = b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html>
