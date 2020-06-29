@@ -191,7 +191,7 @@ pub fn process_file(
 	let mut processed_markdown_content = BufWriter::new(Vec::new());
 
 	process_liquid_content(
-		input_file_path,
+		&output_file_path,
 		&mut processed_markdown_content,
 		&front_matter,
 		None,
@@ -634,7 +634,11 @@ pub fn process_liquid_content<T: Read>(
 
 	match state {
 		State::RegularContent => {}
-		_ => panic!("Content of {} ended while still in state: {:?}", input_file_path.display(), state),
+		_ => panic!(
+			"Content of {} ended while still in state: {:?}",
+			input_file_path.display(),
+			state
+		),
 	}
 }
 
@@ -902,6 +906,13 @@ fn check_and_emit_link(
 		if equal_prefix.iter().next() == None {
 			panic!("No common prefix, expected at least {} but own path is {} and link is {}.", root_output_dir.display(), output_file_path.display(), linked_output.path.display());
 		}
+
+		assert!(
+			output_file_path.starts_with(root_output_dir),
+			"Expected {} to start with {}.",
+			output_file_path.display(),
+			root_output_dir.display()
+		);
 
 		// Do not strip own file name from link if path is the same.
 		if output_file_path == &linked_output.path {
