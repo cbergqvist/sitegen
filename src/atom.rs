@@ -1,4 +1,5 @@
 // Atom was chosen over RSS as the former has a saner date format.
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -21,9 +22,54 @@ pub struct FeedEntry {
 }
 
 pub fn generate(
+	groups: &HashMap<String, Vec<FeedEntry>>,
+	output_dir: &PathBuf,
+	base_url: &str,
+	author: &str,
+	email: &str,
+) {
+	for (group, entries) in groups {
+		let mut latest_update: Option<&String> = None;
+		for entry in entries {
+			if let Some(date) = &entry.front_matter.date {
+				if let Some(latest) = latest_update {
+					if latest < date {
+						latest_update = Some(date);
+					}
+				} else {
+					latest_update = Some(date)
+				}
+			}
+			if let Some(date) = &entry.front_matter.edited {
+				if let Some(latest) = latest_update {
+					if latest < date {
+						latest_update = Some(date);
+					}
+				} else {
+					latest_update = Some(date)
+				}
+			}
+		}
+
+		let feed_name = output_dir
+			.join(PathBuf::from("feeds").join(PathBuf::from(&group)))
+			.with_extension("xml");
+		let header = FeedHeader {
+			title: group.to_string(),
+			base_url: base_url.to_string(),
+			latest_update: latest_update.cloned(),
+			author_name: author.to_string(),
+			author_email: email.to_string(),
+		};
+
+		generate_feed(&feed_name, &header, entries, &output_dir);
+	}
+}
+
+fn generate_feed(
 	file_path: &PathBuf,
 	header: &FeedHeader,
-	entries: Vec<FeedEntry>,
+	entries: &[FeedEntry],
 	output_dir: &PathBuf,
 ) {
 	let parent_dir = file_path.parent().unwrap_or_else(|| {

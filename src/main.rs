@@ -64,13 +64,14 @@ Arguments:"
 
 fn inner_main(config: &config::Config) {
 	let input_files = markdown::get_files(&config.input_dir);
-	let mut input_output_map = HashMap::new();
+	let mut input_output_map;
 
 	if input_files.is_empty() {
 		println!(
 			"Found no valid file entries under \"{}\".",
 			config.input_dir.display()
 		);
+		input_output_map = HashMap::new();
 	} else {
 		fs::create_dir(&config.output_dir).unwrap_or_else(|e| {
 			panic!(
@@ -80,153 +81,28 @@ fn inner_main(config: &config::Config) {
 			)
 		});
 
-		// First, build up the input -> output map so that later when we do
-		// actual processing of files, we have records of all other files.
-		// This allows us to properly detect broken links.
-		for file_name in &input_files.html {
-			let output_file = markdown::compute_output_path(
-				file_name,
-				&config.input_dir,
-				&config.output_dir,
-			);
-			checked_insert(
-				file_name.clone(),
-				output_file,
-				&mut input_output_map,
-			)
-		}
-		for file_name in &input_files.markdown {
-			let output_file = markdown::compute_output_path(
-				file_name,
-				&config.input_dir,
-				&config.output_dir,
-			);
-			checked_insert(
-				file_name.clone(),
-				output_file,
-				&mut input_output_map,
-			)
-		}
-		for file_name in &input_files.raw {
-			let output_file_path = config.output_dir.join(
-				file_name
-					.strip_prefix(&config.input_dir)
-					.unwrap_or_else(|e| {
-						panic!(
-							"Failed stripping prefix {} from {}: {}",
-							config.input_dir.display(),
-							file_name.display(),
-							e
-						)
-					}),
-			);
-			checked_insert(
-				file_name.clone(),
-				OutputFile {
-					path: output_file_path,
-					group: None,
-					front_matter: None,
-				},
-				&mut input_output_map,
-			)
-		}
+		let (i_o_map, mut groups) = build_initial_input_output_map(
+			&input_files,
+			&config.input_dir,
+			&config.output_dir,
+		);
+		input_output_map = i_o_map;
 
-		let mut groups = HashMap::new();
-		for output_file in input_output_map.values() {
-			if let Some(group) = &output_file.group {
-				match groups.entry(group.to_string()) {
-					Entry::Occupied(..) => {}
-					Entry::Vacant(ve) => {
-						ve.insert(Vec::new());
-					}
-				}
-			}
-		}
+		process_initial_files(
+			&input_files,
+			&config.input_dir,
+			&config.output_dir,
+			&mut input_output_map,
+			&mut groups,
+		);
 
-		for group in groups.keys() {
-			let xml_file = PathBuf::from("feeds")
-				.join(PathBuf::from(group).with_extension("xml"));
-			checked_insert(
-				config.input_dir.join(&xml_file), // virtual input
-				OutputFile {
-					path: config.output_dir.join(xml_file),
-					group: None,
-					front_matter: None,
-				},
-				&mut input_output_map,
-			)
-		}
-
-		for file_name in &input_files.html {
-			let _path = markdown::process_template_file_without_markdown(
-				file_name,
-				&config.input_dir,
-				&config.output_dir,
-				&mut input_output_map,
-			);
-		}
-
-		for file_name in &input_files.markdown {
-			let generated = markdown::process_file(
-				file_name,
-				&config.input_dir,
-				&config.output_dir,
-				&mut input_output_map,
-			);
-			if let Some(group) = generated.group {
-				match groups.entry(group.clone()) {
-					Entry::Vacant(..) => panic!(
-						"Group {} should have already been added above.",
-						group
-					),
-					Entry::Occupied(oe) => {
-						let entries = oe.into_mut();
-						entries.push(atom::FeedEntry {
-							front_matter: generated.front_matter,
-							html_content: generated.html_content,
-							permalink: generated.path.clone(),
-						});
-					}
-				}
-			}
-		}
-
-		for (group, entries) in groups {
-			let mut latest_update: Option<&String> = None;
-			for entry in &entries {
-				if let Some(date) = &entry.front_matter.date {
-					if let Some(latest) = latest_update {
-						if latest < date {
-							latest_update = Some(date);
-						}
-					} else {
-						latest_update = Some(date)
-					}
-				}
-				if let Some(date) = &entry.front_matter.edited {
-					if let Some(latest) = latest_update {
-						if latest < date {
-							latest_update = Some(date);
-						}
-					} else {
-						latest_update = Some(date)
-					}
-				}
-			}
-
-			let feed_name = config
-				.output_dir
-				.join(PathBuf::from("feeds").join(PathBuf::from(&group)))
-				.with_extension("xml");
-			let header = atom::FeedHeader {
-				title: group.to_string(),
-				base_url: config.base_url.to_string(),
-				latest_update: latest_update.cloned(),
-				author_name: config.author.to_string(),
-				author_email: config.email.to_string(),
-			};
-			atom::generate(&feed_name, &header, entries, &config.output_dir);
-		}
+		atom::generate(
+			&groups,
+			&config.output_dir,
+			&config.base_url,
+			&config.author,
+			&config.email,
+		);
 
 		util::copy_files_with_prefix(
 			&input_files.raw,
@@ -278,6 +154,122 @@ fn inner_main(config: &config::Config) {
 		&fs_cond_clone,
 		&mut input_output_map,
 	);
+}
+
+fn build_initial_input_output_map(
+	input_files: &markdown::InputFileCollection,
+	input_dir: &PathBuf,
+	output_dir: &PathBuf,
+) -> (
+	HashMap<PathBuf, OutputFile>,
+	HashMap<String, Vec<atom::FeedEntry>>,
+) {
+	let mut input_output_map = HashMap::new();
+
+	// First, build up the input -> output map so that later when we do
+	// actual processing of files, we have records of all other files.
+	// This allows us to properly detect broken links.
+	for file_name in &input_files.html {
+		let output_file =
+			markdown::compute_output_path(file_name, &input_dir, &output_dir);
+		checked_insert(file_name.clone(), output_file, &mut input_output_map)
+	}
+	for file_name in &input_files.markdown {
+		let output_file =
+			markdown::compute_output_path(file_name, &input_dir, &output_dir);
+		checked_insert(file_name.clone(), output_file, &mut input_output_map)
+	}
+	for file_name in &input_files.raw {
+		let output_file_path = output_dir.join(
+			file_name.strip_prefix(&input_dir).unwrap_or_else(|e| {
+				panic!(
+					"Failed stripping prefix {} from {}: {}",
+					input_dir.display(),
+					file_name.display(),
+					e
+				)
+			}),
+		);
+		checked_insert(
+			file_name.clone(),
+			OutputFile {
+				path: output_file_path,
+				group: None,
+				front_matter: None,
+			},
+			&mut input_output_map,
+		)
+	}
+
+	let mut groups = HashMap::new();
+	for output_file in input_output_map.values() {
+		if let Some(group) = &output_file.group {
+			match groups.entry(group.to_string()) {
+				Entry::Occupied(..) => {}
+				Entry::Vacant(ve) => {
+					ve.insert(Vec::new());
+				}
+			}
+		}
+	}
+
+	for group in groups.keys() {
+		let xml_file = PathBuf::from("feeds")
+			.join(PathBuf::from(group).with_extension("xml"));
+		checked_insert(
+			input_dir.join(&xml_file), // virtual input
+			OutputFile {
+				path: output_dir.join(xml_file),
+				group: None,
+				front_matter: None,
+			},
+			&mut input_output_map,
+		)
+	}
+
+	(input_output_map, groups)
+}
+
+fn process_initial_files(
+	input_files: &markdown::InputFileCollection,
+	input_dir: &PathBuf,
+	output_dir: &PathBuf,
+	mut input_output_map: &mut HashMap<PathBuf, OutputFile>,
+	groups: &mut HashMap<String, Vec<atom::FeedEntry>>,
+) {
+	for file_name in &input_files.html {
+		let _path = markdown::process_template_file_without_markdown(
+			file_name,
+			&input_dir,
+			&output_dir,
+			&mut input_output_map,
+		);
+	}
+
+	for file_name in &input_files.markdown {
+		let generated = markdown::process_file(
+			file_name,
+			&input_dir,
+			&output_dir,
+			&mut input_output_map,
+		);
+		if let Some(group) = generated.group {
+			match groups.entry(group.clone()) {
+				Entry::Vacant(..) => panic!(
+					"Group {} should have already been added above.",
+					group
+				),
+				Entry::Occupied(oe) => {
+					let entries = oe.into_mut();
+					entries.push(atom::FeedEntry {
+						front_matter: generated.front_matter,
+						html_content: generated.html_content,
+						permalink: generated.path.clone(),
+					});
+				}
+			}
+		}
+	}
 }
 
 fn checked_insert(
