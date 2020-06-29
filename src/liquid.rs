@@ -9,21 +9,24 @@ use crate::front_matter::FrontMatter;
 use crate::markdown::OutputFile;
 use crate::util::write_to_stream;
 
+pub struct Context<'a> {
+	pub input_file_path: &'a PathBuf,
+	pub output_file_path: &'a PathBuf,
+	pub front_matter: &'a FrontMatter,
+	pub html_content: Option<&'a str>,
+	pub root_input_dir: &'a PathBuf,
+	pub root_output_dir: &'a PathBuf,
+}
 // Rolling a simple version of Liquid parsing on my own since the official Rust
 // one has too many dependencies.
 //
 // Allowing more lines to keep state machine cohesive.
 #[allow(clippy::too_many_lines)]
 pub fn process<T: Read>(
-	output_file_path: &PathBuf,
-	mut output_buf: &mut BufWriter<Vec<u8>>,
-	front_matter: &FrontMatter,
-	html_content: Option<&str>,
-	input_file_path: &PathBuf,
 	input_file: &mut BufReader<T>,
-	root_input_dir: &PathBuf,
-	root_output_dir: &PathBuf,
+	mut output_buf: &mut BufWriter<Vec<u8>>,
 	input_output_map: &HashMap<PathBuf, OutputFile>,
+	context: &Context,
 ) {
 	#[derive(Debug)]
 	enum State {
@@ -48,11 +51,20 @@ pub fn process<T: Read>(
 	let mut field = Vec::new();
 	let mut function = Vec::new();
 	let mut parameter = Vec::new();
+	let panic_at_location = |m, l, c| -> ! {
+		panic!(
+			"{} Location: {}:{}:{}.",
+			m,
+			context.input_file_path.display(),
+			l,
+			c
+		)
+	};
 	loop {
 		let size = input_file.read(&mut buf).unwrap_or_else(|e| {
 			panic!(
 				"Failed reading from template file {}: {}",
-				input_file_path.display(),
+				context.input_file_path.display(),
 				e
 			)
 		});
@@ -68,15 +80,15 @@ pub fn process<T: Read>(
 						write_to_stream(b"{\n", output_buf);
 						state = State::RegularContent
 					}
-					State::ValueObject => panic!("Unexpected newline while reading value object identifier at {}:{}:{}.", input_file_path.display(), line_number, column_number),
+					State::ValueObject => panic_at_location("Unexpected newline while reading value object identifier.", line_number, column_number),
 					State::ValueField => {
-						output_template_value(&mut output_buf, &mut object, &mut field, front_matter, html_content);
+						output_template_value(&mut output_buf, &mut object, &mut field, context.front_matter, context.html_content);
 						state = State::ValueEnd
 					}
-					State::WaitingForCloseBracket => panic!("Expected close bracket but got newline at {}:{}:{}.", input_file_path.display(), line_number, column_number),
-					State::TagFunction => panic!("Unexpected newline in the middle of function at {}:{}:{}.", input_file_path.display(), line_number, column_number),
+					State::WaitingForCloseBracket => panic_at_location("Expected close bracket but got newline.", line_number, column_number),
+					State::TagFunction => panic_at_location("Unexpected newline in the middle of function.", line_number, column_number),
 					State::TagParameter => {
-						run_function(output_file_path, &mut output_buf, &mut function, &mut parameter, front_matter, html_content, input_file_path, root_input_dir, root_output_dir, input_output_map);
+						run_function(&mut output_buf, &mut function, &mut parameter, input_output_map, context);
 						state = State::TagEnd
 					}
 					State::ValueStart | State::ValueEnd | State::TagStart | State::TagEnd => {}
@@ -85,30 +97,30 @@ pub fn process<T: Read>(
 				column_number = 1;
 			} else {
 				match state {
-					State::RegularContent => {
-						match byte {
-							b'{' => state = State::LastOpenBracket,
-							_ => write_to_stream(&[byte], output_buf)
+					State::RegularContent => match byte {
+						b'{' => state = State::LastOpenBracket,
+						_ => write_to_stream(&[byte], output_buf),
+					},
+					State::LastOpenBracket => match byte {
+						b'{' => state = State::ValueStart,
+						b'%' => state = State::TagStart,
+						_ => {
+							write_to_stream(&[b'{'], output_buf);
+							state = State::RegularContent;
 						}
-					}
-					State::LastOpenBracket => {
-						match byte {
-							b'{' =>	state = State::ValueStart,
-							b'%' => state = State::TagStart,
-							_ => {
-								write_to_stream(&[b'{'], output_buf);
-								state = State::RegularContent;
-							}
-						}
-					}
+					},
 					State::ValueStart => match byte {
-						b'{' => panic!("Unexpected open bracket while in template mode at {}:{}:{}.", input_file_path.display(), line_number, column_number),
-						b' ' | b'\t' => {},
+						b'{' => panic_at_location(
+							"Unexpected open bracket while in template mode.",
+							line_number,
+							column_number,
+						),
+						b' ' | b'\t' => {}
 						_ => {
 							object.push(byte);
 							state = State::ValueObject;
 						}
-					}
+					},
 					State::ValueObject => {
 						if byte == b'.' {
 							state = State::ValueField;
@@ -116,68 +128,88 @@ pub fn process<T: Read>(
 							object.push(byte);
 						}
 					}
-					State::ValueField => {
-						match byte {
-							b'.' => panic!("Additional dot in template identifier at {}:{}:{}.", input_file_path.display(), line_number, column_number),
-							b'}' => state = State::WaitingForCloseBracket,
-							b' ' | b'\t' => {
-								output_template_value(&mut output_buf, &mut object, &mut field, front_matter, html_content);
-								state = State::ValueEnd
+					State::ValueField => match byte {
+						b'.' => panic_at_location(
+							"Additional dot in template identifier.",
+							line_number,
+							column_number,
+						),
+						b'}' => state = State::WaitingForCloseBracket,
+						b' ' | b'\t' => {
+							output_template_value(
+								&mut output_buf,
+								&mut object,
+								&mut field,
+								context.front_matter,
+								context.html_content,
+							);
+							state = State::ValueEnd
+						}
+						_ => field.push(byte),
+					},
+					State::ValueEnd => match byte {
+						b'}' => state = State::WaitingForCloseBracket,
+						b' ' | b'\t' => {}
+						_ => panic_at_location(
+							"Unexpected non-whitespace character.",
+							line_number,
+							column_number,
+						),
+					},
+					State::TagStart => match byte {
+						b'%' => panic_at_location(
+							"Unexpected % following tag start.",
+							line_number,
+							column_number,
+						),
+						b' ' | b'\t' => {}
+						_ => {
+							function.push(byte);
+							state = State::TagFunction;
+						}
+					},
+					State::TagFunction => match byte {
+						b' ' | b'\t' => state = State::TagParameter,
+						_ => function.push(byte),
+					},
+					State::TagParameter => match byte {
+						b' ' | b'\t' => {
+							if !parameter.is_empty() {
+								run_function(
+									&mut output_buf,
+									&mut function,
+									&mut parameter,
+									input_output_map,
+									context,
+								);
+								state = State::TagEnd;
 							}
-							_ => field.push(byte)
 						}
-					}
-					State::ValueEnd => {
-						match byte {
-							b'}' => state = State::WaitingForCloseBracket,
-							b' ' | b'\t' => {}
-							_ => panic!("Unexpected non-whitespace character at {}:{}:{}.", input_file_path.display(), line_number, column_number)
-						}
-					}
-					State::TagStart => {
-						match byte {
-							b'%' => panic!("Unexpected % following tag start at {}:{}:{}.", input_file_path.display(), line_number, column_number),
-							b' ' | b'\t' => {}
-							_ => {
-								function.push(byte);
-								state = State::TagFunction;
-							}
-						}
-					}
-					State::TagFunction => {
-						match byte {
-							b' ' | b'\t' => state = State::TagParameter,
-							_ => function.push(byte)
-
-						}
-					}
-					State::TagParameter => {
-						match byte {
-							b' ' | b'\t' => {
-								if !parameter.is_empty() {
-									run_function(output_file_path, &mut output_buf, &mut function, &mut parameter, front_matter, html_content, input_file_path, root_input_dir, root_output_dir, input_output_map);
-									state = State::TagEnd;
-								}
-							}
-							b'%' => {
-								panic!("Unexpected end of parameter at {}:{}:{}.", input_file_path.display(), line_number, column_number)
-							}
-							_ => parameter.push(byte)
-
-						}
-					}
-					State::TagEnd => {
-						match byte {
-							b'%' => state = State::WaitingForCloseBracket,
-							b' ' | b'\t' => {}
-							_ => panic!("Unexpected non-whitespace character at {}:{}:{}.", input_file_path.display(), line_number, column_number)
-						}
-					}
+						b'%' => panic_at_location(
+							"Unexpected end of parameter.",
+							line_number,
+							column_number,
+						),
+						_ => parameter.push(byte),
+					},
+					State::TagEnd => match byte {
+						b'%' => state = State::WaitingForCloseBracket,
+						b' ' | b'\t' => {}
+						_ => panic_at_location(
+							"Unexpected non-whitespace character.",
+							line_number,
+							column_number,
+						),
+					},
 					State::WaitingForCloseBracket => {
 						if byte == b'}' {
 							state = State::RegularContent;
 						} else {
-							panic!("Missing double close-bracket at {}:{}:{}.", input_file_path.display(), line_number, column_number)
+							panic_at_location(
+								"Missing double close-bracket.",
+								line_number,
+								column_number,
+							)
 						}
 					}
 				}
@@ -190,7 +222,7 @@ pub fn process<T: Read>(
 		State::RegularContent => {}
 		_ => panic!(
 			"Content of {} ended while still in state: {:?}",
-			input_file_path.display(),
+			context.input_file_path.display(),
 			state
 		),
 	}
@@ -264,16 +296,11 @@ fn output_template_value(
 }
 
 fn run_function(
-	output_file_path: &PathBuf,
 	mut output_buf: &mut BufWriter<Vec<u8>>,
 	function: &mut Vec<u8>,
 	parameter: &mut Vec<u8>,
-	front_matter: &FrontMatter,
-	html_content: Option<&str>,
-	template_file_path: &PathBuf,
-	root_input_dir: &PathBuf,
-	root_output_dir: &PathBuf,
 	input_output_map: &HashMap<PathBuf, OutputFile>,
+	context: &Context,
 ) {
 	if function.is_empty() {
 		panic!("Empty function name.")
@@ -286,22 +313,17 @@ fn run_function(
 	let parameter_str = String::from_utf8_lossy(parameter);
 	match function_str.borrow() {
 		"include" => include_file(
-			output_file_path,
 			&mut output_buf,
 			&parameter_str,
-			front_matter,
-			html_content,
-			template_file_path,
-			root_input_dir,
-			root_output_dir,
 			input_output_map,
+			context,
 		),
 		"link" => check_and_emit_link(
-			output_file_path,
+			context.output_file_path,
 			&mut output_buf,
 			&parameter_str,
-			root_input_dir,
-			root_output_dir,
+			context.root_input_dir,
+			context.root_output_dir,
 			input_output_map,
 		),
 		_ => panic!("Unsupported function: {}", function_str),
@@ -311,18 +333,15 @@ fn run_function(
 }
 
 fn include_file(
-	output_file_path: &PathBuf,
 	mut output_buf: &mut BufWriter<Vec<u8>>,
 	parameter_str: &str,
-	front_matter: &FrontMatter,
-	html_content: Option<&str>,
-	template_file_path: &PathBuf,
-	root_input_dir: &PathBuf,
-	root_output_dir: &PathBuf,
 	input_output_map: &HashMap<PathBuf, OutputFile>,
+	context: &Context,
 ) {
-	let included_file_path =
-		root_input_dir.join("_includes").join(&*parameter_str);
+	let included_file_path = context
+		.root_input_dir
+		.join("_includes")
+		.join(&*parameter_str);
 
 	let mut included_file = BufReader::new(
 		fs::File::open(&included_file_path).unwrap_or_else(|e| {
@@ -337,19 +356,17 @@ fn include_file(
 	println!(
 		"Including {} into {}.",
 		included_file_path.display(),
-		template_file_path.display()
+		context.input_file_path.display()
 	);
 
 	process(
-		output_file_path,
-		&mut output_buf,
-		front_matter,
-		html_content,
-		&included_file_path,
 		&mut included_file,
-		root_input_dir,
-		root_output_dir,
+		&mut output_buf,
 		input_output_map,
+		&Context {
+			input_file_path: &included_file_path,
+			..*context
+		},
 	)
 }
 

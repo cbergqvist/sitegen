@@ -190,15 +190,17 @@ pub fn process_file(
 	let mut processed_markdown_content = BufWriter::new(Vec::new());
 
 	liquid::process(
-		&output_file_path,
-		&mut processed_markdown_content,
-		&front_matter,
-		None,
-		input_file_path,
 		&mut input_file,
-		root_input_dir,
-		root_output_dir,
+		&mut processed_markdown_content,
 		input_output_map,
+		&liquid::Context {
+			input_file_path,
+			output_file_path: &output_file_path,
+			front_matter: &front_matter,
+			html_content: None,
+			root_input_dir,
+			root_output_dir,
+		},
 	);
 
 	let markdown_content = String::from_utf8_lossy(
@@ -226,15 +228,17 @@ pub fn process_file(
 	);
 
 	liquid::process(
-		&output_file_path,
-		&mut output_buf,
-		&front_matter,
-		Some(&html_content),
-		&template_path_result.path,
 		&mut template_file,
-		root_input_dir,
-		root_output_dir,
+		&mut output_buf,
 		input_output_map,
+		&liquid::Context {
+			input_file_path: &template_path_result.path,
+			output_file_path: &output_file_path,
+			front_matter: &front_matter,
+			html_content: Some(&html_content),
+			root_input_dir,
+			root_output_dir,
+		},
 	);
 
 	write_buffer_to_file(output_buf.buffer(), &output_file_path);
@@ -309,15 +313,17 @@ pub fn process_template_file_without_markdown(
 	let mut output_buf = BufWriter::new(Vec::new());
 
 	liquid::process(
-		&output_file_path,
-		&mut output_buf,
-		&front_matter,
-		None,
-		input_file_path,
 		&mut input_file,
-		root_input_dir,
-		root_output_dir,
+		&mut output_buf,
 		input_output_map,
+		&liquid::Context {
+			input_file_path,
+			output_file_path: &output_file_path,
+			front_matter: &front_matter,
+			html_content: None,
+			root_input_dir,
+			root_output_dir,
+		},
 	);
 
 	write_buffer_to_file(output_buf.buffer(), &output_file_path);

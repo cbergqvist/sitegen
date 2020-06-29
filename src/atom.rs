@@ -26,12 +26,6 @@ pub fn generate(
 	entries: Vec<FeedEntry>,
 	output_dir: &PathBuf,
 ) {
-	fn complete_url(base_url: &str, path: &str) -> String {
-		let mut url = base_url.to_string();
-		url.push_str(path);
-		url
-	}
-
 	let parent_dir = file_path.parent().unwrap_or_else(|| {
 		panic!(
 			"Feed file path without a parent directory?: {}",
@@ -106,58 +100,7 @@ pub fn generate(
 	);
 
 	for entry in entries {
-		let entry_url =
-			complete_url(&header.base_url, &entry.permalink.to_string_lossy());
-
-		write_to_stream(
-			format!(
-				"	<entry>
-		<title>{}</title>
-		<id>{}</id>
-		<link href=\"{}\"/>
-",
-				entry.front_matter.title, entry_url, entry_url
-			)
-			.as_bytes(),
-			&mut output,
-		);
-
-		if let Some(published_date) = entry.front_matter.date {
-			write_to_stream(
-				format!(
-					"		<published>{}</published>
-",
-					published_date
-				)
-				.as_bytes(),
-				&mut output,
-			);
-		}
-		if let Some(updated_date) = entry.front_matter.edited {
-			write_to_stream(
-				format!(
-					"		<updated>{}</updated>
-",
-					updated_date
-				)
-				.as_bytes(),
-				&mut output,
-			);
-		}
-
-		write_to_stream(
-			format!(
-				"		<content type=\"html\"><![CDATA[
-{}
-]]></content>
-	</entry>
-
-",
-				entry.html_content
-			)
-			.as_bytes(),
-			&mut output,
-		);
+		generate_entry(&entry, header, &mut output);
 	}
 
 	write_to_stream(b"</feed>", &mut output);
@@ -174,4 +117,69 @@ pub fn generate(
 			e
 		)
 	});
+}
+
+fn generate_entry(
+	entry: &FeedEntry,
+	header: &FeedHeader,
+	mut output: &mut BufWriter<Vec<u8>>,
+) {
+	let entry_url =
+		complete_url(&header.base_url, &entry.permalink.to_string_lossy());
+
+	write_to_stream(
+		format!(
+			"	<entry>
+		<title>{}</title>
+		<id>{}</id>
+		<link href=\"{}\"/>
+",
+			entry.front_matter.title, entry_url, entry_url
+		)
+		.as_bytes(),
+		&mut output,
+	);
+
+	if let Some(published_date) = &entry.front_matter.date {
+		write_to_stream(
+			format!(
+				"		<published>{}</published>
+",
+				published_date
+			)
+			.as_bytes(),
+			&mut output,
+		);
+	}
+	if let Some(updated_date) = &entry.front_matter.edited {
+		write_to_stream(
+			format!(
+				"		<updated>{}</updated>
+",
+				updated_date
+			)
+			.as_bytes(),
+			&mut output,
+		);
+	}
+
+	write_to_stream(
+		format!(
+			"		<content type=\"html\"><![CDATA[
+{}
+]]></content>
+	</entry>
+
+",
+			entry.html_content
+		)
+		.as_bytes(),
+		&mut output,
+	);
+}
+
+fn complete_url(base_url: &str, path: &str) -> String {
+	let mut url = base_url.to_string();
+	url.push_str(path);
+	url
 }

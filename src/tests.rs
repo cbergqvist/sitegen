@@ -37,15 +37,17 @@ fn test_liquid_link() {
 	);
 
 	liquid::process(
-		&output_file_path,
-		&mut processed_markdown_content,
-		&front_matter,
-		None,
-		&input_file_path,
 		&mut input_file,
-		&PathBuf::from("./input"),
-		&PathBuf::from("./output"),
+		&mut processed_markdown_content,
 		&input_output_map,
+		&liquid::Context {
+			input_file_path: &input_file_path,
+			output_file_path: &output_file_path,
+			front_matter: &front_matter,
+			html_content: None,
+			root_input_dir: &PathBuf::from("./input"),
+			root_output_dir: &PathBuf::from("./output"),
+		},
 	);
 
 	assert_eq!(
@@ -86,15 +88,17 @@ fn test_liquid_unfinished() {
 
 	let result = std::panic::catch_unwind(move || {
 		liquid::process(
-			&output_file_path,
-			&mut processed_markdown_content,
-			&front_matter,
-			None,
-			&input_file_path,
 			&mut input_file,
-			&PathBuf::from("./input"),
-			&PathBuf::from("./output"),
+			&mut processed_markdown_content,
 			&input_output_map,
+			&liquid::Context {
+				input_file_path: &input_file_path,
+				output_file_path: &output_file_path,
+				front_matter: &front_matter,
+				html_content: None,
+				root_input_dir: &PathBuf::from("./input"),
+				root_output_dir: &PathBuf::from("./output"),
+			},
 		)
 	});
 
