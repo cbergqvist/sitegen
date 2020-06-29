@@ -890,88 +890,89 @@ fn check_and_emit_link(
 	if append_index_html {
 		path = path.join(PathBuf::from("index.html"));
 	}
-	if let Some(linked_output) = input_output_map.get(&path) {
-		let mut equal_prefix = PathBuf::new();
-		let mut equal_component_count = 0;
-		for (self_component, link_component) in output_file_path
-			.components()
-			.zip(linked_output.path.components())
-		{
-			if self_component != link_component {
-				break;
-			}
-			equal_prefix = equal_prefix.join(self_component);
-			equal_component_count += 1;
-		}
-		if equal_prefix.iter().next() == None {
-			panic!("No common prefix, expected at least {} but own path is {} and link is {}.", root_output_dir.display(), output_file_path.display(), linked_output.path.display());
-		}
 
-		assert!(
-			output_file_path.starts_with(root_output_dir),
-			"Expected {} to start with {}.",
-			output_file_path.display(),
-			root_output_dir.display()
-		);
-
-		// Do not strip own file name from link if path is the same.
-		if output_file_path == &linked_output.path {
-			equal_prefix.pop();
-		}
-
-		let own_component_count = output_file_path.components().count();
-		let linked_component_count = linked_output.path.components().count();
-		let mut base = PathBuf::new();
-		if own_component_count > linked_component_count {
-			for _i in 0..(own_component_count - linked_component_count) {
-				base = base.join("../");
-			}
-		} else if own_component_count > equal_component_count + 1 {
-			for _i in 0..((own_component_count - 1) - equal_component_count) {
-				base = base.join("../");
-			}
-		} else {
-			base = PathBuf::from("./");
-		}
-
-		let mut prefix_plus_slash = equal_prefix.to_string_lossy().to_string();
-		prefix_plus_slash.push('/');
-		let mut linked_output_path_stripped = base.join(
-			linked_output
-				.path
-				.strip_prefix(&prefix_plus_slash)
-				.unwrap_or_else(|e| {
-					panic!(
-						"Failed stripping prefix {} from {}: {}",
-						prefix_plus_slash,
-						linked_output.path.display(),
-						e
-					)
-				}),
-		);
-
-		let mut append_trailing_slash = false;
-		if linked_output_path_stripped.file_name()
-			== Some(OsStr::new("index.html"))
-		{
-			linked_output_path_stripped.pop();
-			append_trailing_slash = true;
-		}
-
-		let mut linked_output_path_stripped_str =
-			linked_output_path_stripped.to_string_lossy().to_string();
-		if append_trailing_slash {
-			linked_output_path_stripped_str.push('/');
-		}
-
-		println!("File: {}, original link: {}, translated: {}, prefix+slash: {}, result: {}", output_file_path.display(), parameter_str, linked_output.path.display(), prefix_plus_slash, &linked_output_path_stripped_str);
-
-		write_to_stream(linked_output_path_stripped_str.as_bytes(), output_buf);
-	} else {
-		panic!(
+	let linked_output = match input_output_map.get(&path) {
+		Some(lo) => lo,
+		_ => panic!(
 			"Failed finding {} among: {:#?}",
 			path.display(),
 			input_output_map.keys()
-		);
+		),
+	};
+
+	let mut equal_prefix = PathBuf::new();
+	let mut equal_component_count = 0;
+	for (self_component, link_component) in output_file_path
+		.components()
+		.zip(linked_output.path.components())
+	{
+		if self_component != link_component {
+			break;
+		}
+		equal_prefix = equal_prefix.join(self_component);
+		equal_component_count += 1;
 	}
+	if equal_prefix.iter().next() == None {
+		panic!("No common prefix, expected at least {} but own path is {} and link is {}.", root_output_dir.display(), output_file_path.display(), linked_output.path.display());
+	}
+
+	assert!(
+		output_file_path.starts_with(root_output_dir),
+		"Expected {} to start with {}.",
+		output_file_path.display(),
+		root_output_dir.display()
+	);
+
+	// Do not strip own file name from link if path is the same.
+	if output_file_path == &linked_output.path {
+		equal_prefix.pop();
+	}
+
+	let own_component_count = output_file_path.components().count();
+	let linked_component_count = linked_output.path.components().count();
+	let mut base = PathBuf::new();
+	if own_component_count > linked_component_count {
+		for _i in 0..(own_component_count - linked_component_count) {
+			base = base.join("../");
+		}
+	} else if own_component_count > equal_component_count + 1 {
+		for _i in 0..((own_component_count - 1) - equal_component_count) {
+			base = base.join("../");
+		}
+	} else {
+		base = PathBuf::from("./");
+	}
+
+	let mut prefix_plus_slash = equal_prefix.to_string_lossy().to_string();
+	prefix_plus_slash.push('/');
+	let mut linked_output_path_stripped = base.join(
+		linked_output
+			.path
+			.strip_prefix(&prefix_plus_slash)
+			.unwrap_or_else(|e| {
+				panic!(
+					"Failed stripping prefix {} from {}: {}",
+					prefix_plus_slash,
+					linked_output.path.display(),
+					e
+				)
+			}),
+	);
+
+	let mut append_trailing_slash = false;
+	if linked_output_path_stripped.file_name() == Some(OsStr::new("index.html"))
+	{
+		linked_output_path_stripped.pop();
+		append_trailing_slash = true;
+	}
+
+	let mut linked_output_path_stripped_str =
+		linked_output_path_stripped.to_string_lossy().to_string();
+	if append_trailing_slash {
+		linked_output_path_stripped_str.push('/');
+	}
+
+	println!("File: {}, original link: {}, translated: {}, prefix+slash: {}, result: {}", output_file_path.display(), parameter_str, linked_output.path.display(), prefix_plus_slash, &linked_output_path_stripped_str);
+
+	write_to_stream(linked_output_path_stripped_str.as_bytes(), output_buf);
 }
