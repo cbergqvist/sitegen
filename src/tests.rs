@@ -4,6 +4,7 @@ use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
 
 use crate::front_matter;
+use crate::liquid;
 use crate::markdown;
 
 #[test]
@@ -35,7 +36,7 @@ fn test_liquid_link() {
 		},
 	);
 
-	markdown::process_liquid_content(
+	liquid::process(
 		&output_file_path,
 		&mut processed_markdown_content,
 		&front_matter,
@@ -84,7 +85,7 @@ fn test_liquid_unfinished() {
 	);
 
 	let result = std::panic::catch_unwind(move || {
-		markdown::process_liquid_content(
+		liquid::process(
 			&output_file_path,
 			&mut processed_markdown_content,
 			&front_matter,

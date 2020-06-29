@@ -18,6 +18,7 @@ use notify::{watcher, RecursiveMode, Watcher};
 mod atom;
 mod config;
 mod front_matter;
+mod liquid;
 mod markdown;
 mod util;
 mod websocket;
