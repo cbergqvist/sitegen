@@ -7,9 +7,12 @@ pub const HTML_EXTENSION: &str = "html";
 pub const MARKDOWN_EXTENSION: &str = "md";
 pub const XML_EXTENSION: &str = "xml";
 
+// Special identifier making JavaScript reload the current page.
+pub const RELOAD_CURRENT: &str = "*";
+
 pub struct Refresh {
 	pub index: u32,
-	pub file: Option<PathBuf>,
+	pub file: Option<String>,
 }
 
 pub fn write_to_stream<T: Write>(buffer: &[u8], stream: &mut T) {

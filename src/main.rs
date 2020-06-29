@@ -481,7 +481,7 @@ fn get_path_to_refresh(
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
 	input_output_map: &mut HashMap<PathBuf, OutputFile>,
-) -> Option<PathBuf> {
+) -> Option<String> {
 	let css_extension = OsStr::new(util::CSS_EXTENSION);
 	let html_extension = OsStr::new(util::HTML_EXTENSION);
 	let markdown_extension = OsStr::new(util::MARKDOWN_EXTENSION);
@@ -500,7 +500,9 @@ fn get_path_to_refresh(
 				output_dir,
 				input_output_map,
 			)
-			.path,
+			.path
+			.to_string_lossy()
+			.to_string(),
 		)
 	} else if input_file_path.extension() == Some(html_extension) {
 		handle_html_updated(
@@ -515,9 +517,31 @@ fn get_path_to_refresh(
 			input_dir,
 			output_dir,
 		);
-		// TODO: input_output_map
-		// Special identifier making JavaScript reload the current page.
-		Some(PathBuf::from("*"))
+
+		match input_output_map.entry(input_file_path.clone()) {
+			Entry::Occupied(..) => {}
+			Entry::Vacant(ve) => {
+				let output_file_path = output_dir.join(
+					input_file_path.strip_prefix(&input_dir).unwrap_or_else(
+						|e| {
+							panic!(
+								"Failed stripping prefix {} from {}: {}",
+								input_dir.display(),
+								input_file_path.display(),
+								e
+							)
+						},
+					),
+				);
+				ve.insert(OutputFile {
+					path: output_file_path,
+					group: None,
+					front_matter: None,
+				});
+			}
+		}
+
+		Some(String::from(util::RELOAD_CURRENT))
 	} else {
 		None
 	}
@@ -555,7 +579,7 @@ fn handle_html_updated(
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
 	input_output_map: &mut HashMap<PathBuf, OutputFile>,
-) -> Option<PathBuf> {
+) -> Option<String> {
 	let parent_path = input_file_path.parent().unwrap_or_else(|| {
 		panic!(
 			"Path without a parent directory?: {}",
@@ -598,7 +622,9 @@ fn handle_html_updated(
 						output_dir,
 						input_output_map,
 					)
-					.path,
+					.path
+					.to_string_lossy()
+					.to_string(),
 				)
 			} else {
 				None
@@ -614,7 +640,9 @@ fn handle_html_updated(
 				))
 			}
 
-			output_files.first().map(|g| g.path.clone())
+			output_files
+				.first()
+				.map(|g| g.path.to_string_lossy().to_string())
 		}
 	} else if parent_path_file_name == "_includes" {
 		// Since we don't track what includes what, just do a full refresh.
@@ -628,15 +656,18 @@ fn handle_html_updated(
 			);
 		}
 
-		// Special identifier making JavaScript reload the current page.
-		Some(PathBuf::from("*"))
+		Some(String::from(util::RELOAD_CURRENT))
 	} else {
-		Some(markdown::process_template_file(
-			input_file_path,
-			input_dir,
-			output_dir,
-			input_output_map,
-		))
+		Some(
+			markdown::process_template_file(
+				input_file_path,
+				input_dir,
+				output_dir,
+				input_output_map,
+			)
+			.to_string_lossy()
+			.to_string(),
+		)
 	}
 }
 

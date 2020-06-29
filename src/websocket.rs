@@ -81,7 +81,7 @@ pub fn handle_stream(
 			}
 		} else {
 			let changed_file = if let Some(path) = &guard.file {
-				String::from(path.to_string_lossy())
+				path.clone()
 			} else {
 				String::from("")
 			};
