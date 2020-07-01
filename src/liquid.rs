@@ -492,6 +492,8 @@ fn fetch_template_value_str(
 }
 
 fn fetch_value(
+	output_file_path: &PathBuf,
+	root_output_dir: &PathBuf,
 	name: &str,
 	groups: &HashMap<String, Vec<OutputFile>>,
 	loop_stack: &Vec<LoopInfo>,
@@ -513,6 +515,14 @@ fn fetch_value(
 						.as_ref()
 						.map_or_else(|| String::new(), |d| d.clone()),
 				),
+			);
+			map.insert(
+				"link",
+				Value::Scalar(make_relative_link(
+					output_file_path,
+					&entry.path,
+					root_output_dir,
+				)),
 			);
 
 			result.push(Value::Dictionary(Dictionary { map }))
@@ -631,6 +641,8 @@ fn start_for<T: Read + Seek>(
 		Vec::new()
 	} else if loop_values_name.len() == 1 {
 		match fetch_value(
+			context.output_file_path,
+			context.root_output_dir,
 			&String::from_utf8_lossy(loop_values_name[0]),
 			groups,
 			loop_stack,
@@ -778,20 +790,37 @@ fn check_and_emit_link(
 		path = path.join(PathBuf::from("index.html"));
 	}
 
-	let linked_output = match input_output_map.get(&path) {
+	let linked_output_path = &match input_output_map.get(&path) {
 		Some(lo) => lo,
 		_ => panic!(
 			"Failed finding {} among: {:#?}",
 			path.display(),
 			input_output_map.keys()
 		),
-	};
+	}
+	.path;
 
+	write_to_stream(
+		make_relative_link(
+			output_file_path,
+			linked_output_path,
+			root_output_dir,
+		)
+		.as_bytes(),
+		output_buf,
+	);
+}
+
+fn make_relative_link(
+	output_file_path: &PathBuf,
+	linked_output_path: &PathBuf,
+	root_output_dir: &PathBuf,
+) -> std::string::String {
 	let mut equal_prefix = PathBuf::new();
 	let mut equal_component_count = 0;
 	for (self_component, link_component) in output_file_path
 		.components()
-		.zip(linked_output.path.components())
+		.zip(linked_output_path.components())
 	{
 		if self_component != link_component {
 			break;
@@ -800,7 +829,7 @@ fn check_and_emit_link(
 		equal_component_count += 1;
 	}
 	if equal_prefix.iter().next() == None {
-		panic!("No common prefix, expected at least {} but own path is {} and link is {}.", root_output_dir.display(), output_file_path.display(), linked_output.path.display());
+		panic!("No common prefix, expected at least {} but own path is {} and link is {}.", root_output_dir.display(), output_file_path.display(), linked_output_path.display());
 	}
 
 	assert!(
@@ -811,12 +840,12 @@ fn check_and_emit_link(
 	);
 
 	// Do not strip own file name from link if path is the same.
-	if output_file_path == &linked_output.path {
+	if output_file_path == linked_output_path {
 		equal_prefix.pop();
 	}
 
 	let own_component_count = output_file_path.components().count();
-	let linked_component_count = linked_output.path.components().count();
+	let linked_component_count = linked_output_path.components().count();
 	let mut base = PathBuf::new();
 	if own_component_count > linked_component_count {
 		for _i in 0..(own_component_count - linked_component_count) {
@@ -833,14 +862,13 @@ fn check_and_emit_link(
 	let mut prefix_plus_slash = equal_prefix.to_string_lossy().to_string();
 	prefix_plus_slash.push('/');
 	let mut linked_output_path_stripped = base.join(
-		linked_output
-			.path
+		linked_output_path
 			.strip_prefix(&prefix_plus_slash)
 			.unwrap_or_else(|e| {
 				panic!(
 					"Failed stripping prefix {} from {}: {}",
 					prefix_plus_slash,
-					linked_output.path.display(),
+					linked_output_path.display(),
 					e
 				)
 			}),
@@ -861,7 +889,13 @@ fn check_and_emit_link(
 		linked_output_path_stripped_str.push('/');
 	}
 
-	println!("File: {}, original link: {}, translated: {}, prefix+slash: {}, result: {}", output_file_path.display(), parameter_str, linked_output.path.display(), prefix_plus_slash, &linked_output_path_stripped_str);
+	println!(
+		"File: {}, translated link: {}, prefix+slash: {}, result: {}",
+		output_file_path.display(),
+		linked_output_path.display(),
+		prefix_plus_slash,
+		&linked_output_path_stripped_str
+	);
 
-	write_to_stream(linked_output_path_stripped_str.as_bytes(), output_buf);
+	linked_output_path_stripped_str
 }

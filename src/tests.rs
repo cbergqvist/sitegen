@@ -118,7 +118,7 @@ fn test_liquid_for() {
 		PathBuf::from("./output/posts/virtual_test_b.html");
 	let front_matter_a = front_matter::FrontMatter {
 		title: "Title A".to_string(),
-		date: None,
+		date: Some("2001-01-19T20:10:01Z".to_string()),
 		published: true,
 		edited: None,
 		categories: Vec::new(),
@@ -139,7 +139,7 @@ fn test_liquid_for() {
 		end_position: 0,
 	};
 	let mut input_file = BufReader::new(Cursor::new(
-		(r#"{% for post in posts %}-{{ post.title }}-{% endfor %}"#).as_bytes(),
+		(r#"{% for post in posts %}-{{ post.date }} <a href="{{ post.link }}">{{ post.title }}</a>-{% endfor %}"#).as_bytes(),
 	));
 
 	let mut input_output_map = HashMap::new();
@@ -193,6 +193,6 @@ fn test_liquid_for() {
 		String::from_utf8_lossy(
 			&processed_markdown_content.into_inner().unwrap()
 		),
-		"-Title A--Title B-"
+		"-2001-01-19T20:10:01Z <a href=\"./virtual_test_a.html\">Title A</a>-- <a href=\"./virtual_test_b.html\">Title B</a>-"
 	);
 }
