@@ -23,7 +23,7 @@ mod websocket;
 #[cfg(test)]
 mod tests;
 
-use markdown::OutputFile;
+use markdown::{GroupedOutputFile, OptionOutputFile, OutputFile};
 use util::{write_to_stream, write_to_stream_log_count, Refresh};
 
 enum ReadResult {
@@ -62,6 +62,7 @@ Arguments:"
 fn inner_main(config: &config::Config) {
 	let input_files = markdown::get_files(&config.input_dir);
 	let mut input_output_map;
+	let mut groups;
 
 	if input_files.is_empty() {
 		println!(
@@ -69,6 +70,7 @@ fn inner_main(config: &config::Config) {
 			config.input_dir.display()
 		);
 		input_output_map = HashMap::new();
+		groups = HashMap::new();
 	} else {
 		fs::create_dir(&config.output_dir).unwrap_or_else(|e| {
 			panic!(
@@ -78,14 +80,15 @@ fn inner_main(config: &config::Config) {
 			)
 		});
 
-		let (i_o_map, mut groups) = build_initial_input_output_map(
+		let (i_o_map, g_map) = build_initial_input_output_map(
 			&input_files,
 			&config.input_dir,
 			&config.output_dir,
 		);
 		input_output_map = i_o_map;
+		groups = g_map;
 
-		process_initial_files(
+		let feed_groups = process_initial_files(
 			&input_files,
 			&config.input_dir,
 			&config.output_dir,
@@ -94,7 +97,7 @@ fn inner_main(config: &config::Config) {
 		);
 
 		atom::generate(
-			&groups,
+			feed_groups,
 			&config.output_dir,
 			&config.base_url,
 			&config.author,
@@ -150,6 +153,7 @@ fn inner_main(config: &config::Config) {
 		&config.output_dir,
 		&fs_cond_clone,
 		&mut input_output_map,
+		&mut groups,
 	);
 }
 
@@ -158,10 +162,11 @@ fn build_initial_input_output_map(
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
 ) -> (
-	HashMap<PathBuf, OutputFile>,
-	HashMap<String, Vec<atom::FeedEntry>>,
+	HashMap<PathBuf, OptionOutputFile>,
+	HashMap<String, Vec<OutputFile>>,
 ) {
 	let mut input_output_map = HashMap::new();
+	let mut groups = HashMap::new();
 
 	// First, build up the input -> output map so that later when we do
 	// actual processing of files, we have records of all other files.
@@ -169,12 +174,22 @@ fn build_initial_input_output_map(
 	for file_name in &input_files.html {
 		let output_file =
 			markdown::compute_output_path(file_name, input_dir, output_dir);
-		checked_insert(file_name.clone(), output_file, &mut input_output_map)
+		checked_insert(
+			file_name.clone(),
+			output_file,
+			&mut input_output_map,
+			&mut groups,
+		)
 	}
 	for file_name in &input_files.markdown {
 		let output_file =
 			markdown::compute_output_path(file_name, input_dir, output_dir);
-		checked_insert(file_name.clone(), output_file, &mut input_output_map)
+		checked_insert(
+			file_name.clone(),
+			output_file,
+			&mut input_output_map,
+			&mut groups,
+		)
 	}
 	for file_name in &input_files.raw {
 		let output_file_path = output_dir.join(
@@ -189,25 +204,16 @@ fn build_initial_input_output_map(
 		);
 		checked_insert(
 			file_name.clone(),
-			OutputFile {
-				path: output_file_path,
+			GroupedOutputFile {
+				file: OptionOutputFile {
+					path: output_file_path,
+					front_matter: None,
+				},
 				group: None,
-				front_matter: None,
 			},
 			&mut input_output_map,
+			&mut groups,
 		)
-	}
-
-	let mut groups = HashMap::new();
-	for output_file in input_output_map.values() {
-		if let Some(group) = &output_file.group {
-			match groups.entry(group.to_string()) {
-				Entry::Occupied(..) => {}
-				Entry::Vacant(ve) => {
-					ve.insert(Vec::new());
-				}
-			}
-		}
 	}
 
 	for group in groups.keys() {
@@ -215,12 +221,15 @@ fn build_initial_input_output_map(
 			.join(PathBuf::from(group).with_extension("xml"));
 		checked_insert(
 			input_dir.join(&xml_file), // virtual input
-			OutputFile {
-				path: output_dir.join(xml_file),
+			GroupedOutputFile {
+				file: OptionOutputFile {
+					path: output_dir.join(xml_file),
+					front_matter: None,
+				},
 				group: None,
-				front_matter: None,
 			},
 			&mut input_output_map,
+			&mut HashMap::new(),
 		)
 	}
 
@@ -231,15 +240,18 @@ fn process_initial_files(
 	input_files: &markdown::InputFileCollection,
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
-	mut input_output_map: &mut HashMap<PathBuf, OutputFile>,
-	groups: &mut HashMap<String, Vec<atom::FeedEntry>>,
-) {
+	mut input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
+	mut groups: &mut HashMap<String, Vec<OutputFile>>,
+) -> HashMap<String, Vec<atom::FeedEntry>> {
+	let mut feed_map = HashMap::new();
+
 	for file_name in &input_files.html {
 		let _path = markdown::process_template_file(
 			file_name,
 			input_dir,
 			output_dir,
 			&mut input_output_map,
+			groups,
 		);
 	}
 
@@ -249,46 +261,61 @@ fn process_initial_files(
 			input_dir,
 			output_dir,
 			&mut input_output_map,
+			&mut groups,
 		);
 		if let Some(group) = generated.group {
-			match groups.entry(group.clone()) {
-				Entry::Vacant(..) => panic!(
-					"Group {} should have already been added above.",
-					group
-				),
-				Entry::Occupied(oe) => {
-					let entries = oe.into_mut();
-					entries.push(atom::FeedEntry {
-						front_matter: generated.front_matter,
-						html_content: generated.html_content,
-						permalink: generated.path.clone(),
-					});
+			let entry = atom::FeedEntry {
+				front_matter: generated.file.front_matter,
+				html_content: generated.html_content,
+				permalink: generated.file.path,
+			};
+			match feed_map.entry(group.clone()) {
+				Entry::Vacant(ve) => {
+					ve.insert(vec![entry]);
 				}
+				Entry::Occupied(oe) => oe.into_mut().push(entry),
 			}
 		}
 	}
+
+	feed_map
 }
 
 fn checked_insert(
 	key: PathBuf,
-	value: OutputFile,
-	map: &mut HashMap<PathBuf, OutputFile>,
+	value: GroupedOutputFile,
+	path_map: &mut HashMap<PathBuf, OptionOutputFile>,
+	group_map: &mut HashMap<String, Vec<OutputFile>>,
 ) {
-	match map.entry(key) {
+	match path_map.entry(key) {
 		Entry::Occupied(oe) => {
 			panic!(
 				"Key {} already had value: {}, when trying to insert: {}",
 				oe.key().display(),
 				oe.get().path.display(),
-				value.path.display()
+				value.file.path.display()
 			);
 		}
-		Entry::Vacant(ve) => ve.insert(value),
+		Entry::Vacant(ve) => {
+			ve.insert(value.file.clone());
+			if let Some(group) = value.group {
+				let file = OutputFile {
+					front_matter: value.file.front_matter.unwrap(),
+					path: value.file.path,
+				};
+				match group_map.entry(group) {
+					Entry::Vacant(ve) => {
+						ve.insert(vec![file]);
+					}
+					Entry::Occupied(oe) => oe.into_mut().push(file),
+				}
+			}
+		}
 	};
 }
 
 fn find_newest_file(
-	input_output_map: &HashMap<PathBuf, OutputFile>,
+	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
 ) -> Option<PathBuf> {
@@ -420,7 +447,8 @@ fn watch_fs(
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
 	fs_cond: &Arc<(Mutex<Refresh>, Condvar)>,
-	mut input_output_map: &mut HashMap<PathBuf, OutputFile>,
+	mut input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
+	groups: &mut HashMap<String, Vec<OutputFile>>,
 ) -> ! {
 	let (tx, rx) = channel();
 	let mut watcher =
@@ -446,6 +474,7 @@ fn watch_fs(
 							input_dir,
 							output_dir,
 							&mut input_output_map,
+							groups,
 						);
 						println!(
 							"Path to communicate: {:?}",
@@ -477,7 +506,8 @@ fn get_path_to_refresh(
 	input_file_path: &PathBuf,
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
-	input_output_map: &mut HashMap<PathBuf, OutputFile>,
+	input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
+	groups: &mut HashMap<String, Vec<OutputFile>>,
 ) -> Option<String> {
 	let css_extension = OsStr::new(util::CSS_EXTENSION);
 	let html_extension = OsStr::new(util::HTML_EXTENSION);
@@ -496,7 +526,9 @@ fn get_path_to_refresh(
 				input_dir,
 				output_dir,
 				input_output_map,
+				groups,
 			)
+			.file
 			.path
 			.to_string_lossy()
 			.to_string(),
@@ -507,6 +539,7 @@ fn get_path_to_refresh(
 			input_dir,
 			output_dir,
 			input_output_map,
+			groups,
 		)
 	} else if input_file_path.extension() == Some(css_extension) {
 		util::copy_files_with_prefix(
@@ -530,9 +563,8 @@ fn get_path_to_refresh(
 						},
 					),
 				);
-				ve.insert(OutputFile {
+				ve.insert(OptionOutputFile {
 					path: output_file_path,
-					group: None,
 					front_matter: None,
 				});
 			}
@@ -575,7 +607,8 @@ fn handle_html_updated(
 	input_file_path: &PathBuf,
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
-	input_output_map: &mut HashMap<PathBuf, OutputFile>,
+	input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
+	groups: &mut HashMap<String, Vec<OutputFile>>,
 ) -> Option<String> {
 	let parent_path = input_file_path.parent().unwrap_or_else(|| {
 		panic!(
@@ -618,7 +651,9 @@ fn handle_html_updated(
 						input_dir,
 						output_dir,
 						input_output_map,
+						groups,
 					)
+					.file
 					.path
 					.to_string_lossy()
 					.to_string(),
@@ -634,12 +669,13 @@ fn handle_html_updated(
 					input_dir,
 					output_dir,
 					input_output_map,
+					groups,
 				))
 			}
 
 			output_files
 				.first()
-				.map(|g| g.path.to_string_lossy().to_string())
+				.map(|g| g.file.path.to_string_lossy().to_string())
 		}
 	} else if parent_path_file_name == "_includes" {
 		// Since we don't track what includes what, just do a full refresh.
@@ -650,6 +686,7 @@ fn handle_html_updated(
 				input_dir,
 				output_dir,
 				input_output_map,
+				groups,
 			);
 		}
 
@@ -661,6 +698,7 @@ fn handle_html_updated(
 				input_dir,
 				output_dir,
 				input_output_map,
+				groups,
 			)
 			.to_string_lossy()
 			.to_string(),
@@ -917,7 +955,7 @@ Sitemap: {}
 fn write_sitemap_xml(
 	output_dir: &PathBuf,
 	base_url: &str,
-	input_output_map: &HashMap<PathBuf, OutputFile>,
+	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
 ) -> String {
 	let official_file_name = PathBuf::from("sitemap.xml");
 	let file_name = output_dir.join(&official_file_name);

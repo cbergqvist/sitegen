@@ -22,13 +22,13 @@ pub struct FeedEntry {
 }
 
 pub fn generate(
-	groups: &HashMap<String, Vec<FeedEntry>>,
+	groups: HashMap<String, Vec<FeedEntry>>,
 	output_dir: &PathBuf,
 	base_url: &str,
 	author: &str,
 	email: &str,
 ) {
-	for (group, entries) in groups {
+	for (group, entries) in &groups {
 		let mut latest_update: Option<&String> = None;
 		for entry in entries {
 			if let Some(date) = &entry.front_matter.date {
@@ -62,7 +62,7 @@ pub fn generate(
 			author_email: email.to_string(),
 		};
 
-		generate_feed(&feed_name, &header, entries, output_dir);
+		generate_feed(&feed_name, &header, &entries, output_dir);
 	}
 }
 

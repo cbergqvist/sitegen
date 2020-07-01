@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
@@ -12,10 +13,9 @@ use crate::liquid;
 use crate::util;
 
 #[derive(Clone)]
-pub struct OutputFile {
-	pub path: PathBuf,
+pub struct GroupedOutputFile {
+	pub file: OptionOutputFile,
 	pub group: Option<String>,
-	pub front_matter: Option<FrontMatter>,
 }
 
 pub struct ComputedTemplatePath {
@@ -24,10 +24,21 @@ pub struct ComputedTemplatePath {
 }
 
 pub struct GeneratedFile {
-	pub path: PathBuf,
+	pub file: OutputFile,
 	pub group: Option<String>,
-	pub front_matter: FrontMatter,
 	pub html_content: String,
+}
+
+#[derive(Clone)]
+pub struct OutputFile {
+	pub front_matter: FrontMatter,
+	pub path: PathBuf,
+}
+
+#[derive(Clone)]
+pub struct OptionOutputFile {
+	pub front_matter: Option<FrontMatter>,
+	pub path: PathBuf,
 }
 
 pub struct InputFileCollection {
@@ -150,18 +161,36 @@ pub fn process_file(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-	input_output_map: &mut HashMap<PathBuf, OutputFile>,
+	input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
+	groups: &mut HashMap<String, Vec<OutputFile>>,
 ) -> GeneratedFile {
 	let timer = Instant::now();
 
 	let output_file = input_output_map
 		.entry(input_file_path.clone())
 		.or_insert_with(|| {
-			compute_output_path(
+			let grouped_file = compute_output_path(
 				input_file_path,
 				root_input_dir,
 				root_output_dir,
-			)
+			);
+			if let Some(group) = grouped_file.group {
+				let file = OutputFile {
+					front_matter: grouped_file
+						.file
+						.front_matter
+						.clone()
+						.unwrap(),
+					path: grouped_file.file.path.clone(),
+				};
+				match groups.entry(group) {
+					Entry::Vacant(ve) => {
+						ve.insert(vec![file]);
+					}
+					Entry::Occupied(oe) => oe.into_mut().push(file),
+				}
+			}
+			grouped_file.file
 		})
 		.clone();
 
@@ -192,6 +221,7 @@ pub fn process_file(
 		&mut input_file,
 		&mut processed_markdown_content,
 		input_output_map,
+		groups,
 		&liquid::Context {
 			input_file_path,
 			output_file_path: &output_file_path,
@@ -230,6 +260,7 @@ pub fn process_file(
 		&mut template_file,
 		&mut output_buf,
 		input_output_map,
+		groups,
 		&liquid::Context {
 			input_file_path: &template_path_result.path,
 			output_file_path: &output_file_path,
@@ -251,19 +282,21 @@ pub fn process_file(
 	);
 
 	GeneratedFile {
-		path: output_file_path
-			.strip_prefix(root_output_dir)
-			.unwrap_or_else(|e| {
-				panic!(
-					"Failed stripping prefix \"{}\" from \"{}\": {}",
-					root_output_dir.display(),
-					output_file_path.display(),
-					e
-				)
-			})
-			.to_path_buf(),
+		file: OutputFile {
+			front_matter: front_matter,
+			path: output_file_path
+				.strip_prefix(root_output_dir)
+				.unwrap_or_else(|e| {
+					panic!(
+						"Failed stripping prefix \"{}\" from \"{}\": {}",
+						root_output_dir.display(),
+						output_file_path.display(),
+						e
+					)
+				})
+				.to_path_buf(),
+		},
 		group: template_path_result.group,
-		front_matter,
 		html_content,
 	}
 }
@@ -272,7 +305,8 @@ pub fn process_template_file(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-	input_output_map: &mut HashMap<PathBuf, OutputFile>,
+	input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
+	groups: &mut HashMap<String, Vec<OutputFile>>,
 ) -> PathBuf {
 	let timer = Instant::now();
 
@@ -284,6 +318,7 @@ pub fn process_template_file(
 				root_input_dir,
 				root_output_dir,
 			)
+			.file
 		})
 		.clone();
 
@@ -314,6 +349,7 @@ pub fn process_template_file(
 		&mut input_file,
 		&mut output_buf,
 		input_output_map,
+		groups,
 		&liquid::Context {
 			input_file_path,
 			output_file_path: &output_file_path,
@@ -378,7 +414,7 @@ pub fn compute_output_path(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-) -> OutputFile {
+) -> GroupedOutputFile {
 	let mut path = root_output_dir.clone();
 	if input_file_path.starts_with(root_input_dir) {
 		path.push(
@@ -451,10 +487,12 @@ pub fn compute_output_path(
 		group = Some(input_file_parent.to_string());
 	}
 
-	OutputFile {
-		path,
+	GroupedOutputFile {
+		file: OptionOutputFile {
+			path,
+			front_matter: Some(front_matter),
+		},
 		group,
-		front_matter: Some(front_matter),
 	}
 }
 
