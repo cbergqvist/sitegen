@@ -300,7 +300,8 @@ fn checked_insert(
 			ve.insert(value.file.clone());
 			if let Some(group) = value.group {
 				let file = OutputFile {
-					front_matter: value.file.front_matter.unwrap(),
+					front_matter: value.file.front_matter
+						.expect(&format!("Expect front matter for grouped files, but didn't get one for {}.", value.file.path.display())),
 					path: value.file.path,
 				};
 				match group_map.entry(group) {

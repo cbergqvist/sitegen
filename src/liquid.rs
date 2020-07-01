@@ -25,17 +25,17 @@ struct Position {
 	column: usize,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct List {
 	values: Vec<Value>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Dictionary {
 	map: HashMap<&'static str, Value>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Value {
 	Scalar(String),
 	List(List),
@@ -356,7 +356,6 @@ fn output_template_value(
 	field: &[u8],
 	front_matter: &FrontMatter,
 	html_content: Option<&str>,
-	//values: &HashMap<String, Dictionary>,
 	loop_stack: &Vec<LoopInfo>,
 ) {
 	match fetch_template_value(
@@ -385,7 +384,6 @@ fn fetch_template_value(
 	field: &[u8],
 	front_matter: &FrontMatter,
 	html_content: Option<&str>,
-	//values: &HashMap<String, Dictionary>,
 	loop_stack: &Vec<LoopInfo>,
 ) -> Value {
 	fetch_template_value_str(
@@ -402,7 +400,6 @@ fn fetch_template_value_str(
 	field: &str,
 	front_matter: &FrontMatter,
 	html_content: Option<&str>,
-	//values: &HashMap<String, Dictionary>,
 	loop_stack: &Vec<LoopInfo>,
 ) -> Value {
 	if object.is_empty() {
@@ -459,7 +456,8 @@ fn fetch_template_value_str(
 	} else {
 		for loop_element in loop_stack.iter().rev() {
 			if loop_element.variable == object {
-				match &loop_element.values[loop_element.index] {
+				let value = &loop_element.values[loop_element.index];
+				match value {
 					Value::Dictionary(dict) => {
 						return dict
 							.map
@@ -472,22 +470,15 @@ fn fetch_template_value_str(
 							})
 							.clone();
 					}
-					_ => panic!("Unexpected value type unwrap()......"),
+					_ => panic!(
+						"Unexpected type of value in \"{}(.{})\": {:?}",
+						object, field, value
+					),
 				}
 			}
 		}
 
 		panic!("Unhandled object \"{}\"", object)
-		/*
-
-		let dict = values.get(object).unwrap_or_else(||
-			panic!("Unhandled object \"{}\"", object)
-		);
-
-		dict.map.get(field).unwrap_or_else(||
-			panic!("Unhandled field \"{}.{}\"", object, field)
-		).clone()
-		*/
 	}
 }
 
@@ -614,7 +605,6 @@ fn start_for<T: Read + Seek>(
 	parameters: &Vec<Vec<u8>>,
 	groups: &HashMap<String, Vec<OutputFile>>,
 	loop_stack: &mut Vec<LoopInfo>,
-	//values: &HashMap<String, Dictionary>,
 	skipping: bool,
 	context: &Context,
 ) {
@@ -639,33 +629,31 @@ fn start_for<T: Read + Seek>(
 	}
 	let loop_values: Vec<Value> = if skipping {
 		Vec::new()
-	} else if loop_values_name.len() == 1 {
-		match fetch_value(
-			context.output_file_path,
-			context.root_output_dir,
-			&String::from_utf8_lossy(loop_values_name[0]),
-			groups,
-			loop_stack,
-		) {
-			Value::List(list) => list.values,
-			_ => panic!("unwrap()...."),
-		}
 	} else {
-		if loop_values_name.len() != 2 {
+		let value = if loop_values_name.len() == 1 {
+			fetch_value(
+				context.output_file_path,
+				context.root_output_dir,
+				&String::from_utf8_lossy(loop_values_name[0]),
+				groups,
+				loop_stack,
+			)
+		} else if loop_values_name.len() == 2 {
+			fetch_template_value(
+				loop_values_name[0],
+				loop_values_name[1],
+				context.front_matter,
+				context.html_content,
+				loop_stack,
+			)
+		} else {
 			panic!(
 				"Unexpected variable name: {}",
 				String::from_utf8_lossy(&parameters[2])
 			)
-		}
+		};
 
-		match fetch_template_value(
-			loop_values_name[0],
-			loop_values_name[1],
-			context.front_matter,
-			context.html_content,
-			loop_stack,
-			//values,
-		) {
+		match value {
 			Value::Scalar(s) => {
 				let mut result = Vec::new();
 				for c in s.chars() {
@@ -689,9 +677,10 @@ fn start_for<T: Read + Seek>(
 			);
 		}
 
-		String::from_utf8_lossy(&parameters[4])
-			.parse::<usize>()
-			.unwrap()
+		let limit_str = String::from_utf8_lossy(&parameters[4]);
+		limit_str.parse::<usize>().unwrap_or_else(|e| {
+			panic!("Failed converting {} to usize: {}", limit_str, e)
+		})
 	} else {
 		0
 	};
@@ -707,7 +696,14 @@ fn start_for<T: Read + Seek>(
 		values: loop_values,
 		variable,
 		index: 0,
-		buffer_start_position: input_file.seek(SeekFrom::Current(0)).unwrap(),
+		buffer_start_position: input_file
+			.seek(SeekFrom::Current(0))
+			.unwrap_or_else(|e| {
+				panic!(
+					"Failed fetching current position from input stream: {}",
+					e
+				)
+			}),
 	})
 }
 
@@ -724,7 +720,12 @@ fn end_for<T: Read + Seek>(
 	if loop_info.index < loop_info.end {
 		input_file
 			.seek(SeekFrom::Start(loop_info.buffer_start_position))
-			.unwrap();
+			.unwrap_or_else(|e| {
+				panic!(
+					"Failed seeking to position {} in input stream: {}",
+					loop_info.buffer_start_position, e
+				)
+			});
 	} else {
 		loop_stack.pop();
 	}

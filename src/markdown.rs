@@ -164,6 +164,11 @@ pub fn process_file(
 	input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
 	groups: &mut HashMap<String, Vec<OutputFile>>,
 ) -> GeneratedFile {
+	assert_eq!(
+		input_file_path.extension(),
+		Some(OsStr::new(util::MARKDOWN_EXTENSION))
+	);
+
 	let timer = Instant::now();
 
 	let output_file = input_output_map
@@ -180,7 +185,7 @@ pub fn process_file(
 						.file
 						.front_matter
 						.clone()
-						.unwrap(),
+						.expect(&format!("Expect front matter for markdown files, but didn't get one for {}.", input_file_path.display())),
 					path: grouped_file.file.path.clone(),
 				};
 				match groups.entry(group) {
@@ -308,6 +313,11 @@ pub fn process_template_file(
 	input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
 	groups: &mut HashMap<String, Vec<OutputFile>>,
 ) -> PathBuf {
+	assert_eq!(
+		input_file_path.extension(),
+		Some(OsStr::new(util::HTML_EXTENSION))
+	);
+
 	let timer = Instant::now();
 
 	let output_file = input_output_map
