@@ -199,7 +199,7 @@ fn build_initial_input_output_map(
 	}
 	for file_name in &input_files.raw {
 		let output_file_path =
-			output_dir.join(strip_prefix(file_name, &input_dir));
+			output_dir.join(strip_prefix(file_name, input_dir));
 		checked_insert(
 			file_name.clone(),
 			GroupedOutputFile {
@@ -539,7 +539,7 @@ fn get_path_to_refresh(
 			Entry::Occupied(..) => {}
 			Entry::Vacant(ve) => {
 				let output_file_path =
-					output_dir.join(strip_prefix(input_file_path, &input_dir));
+					output_dir.join(strip_prefix(input_file_path, input_dir));
 				ve.insert(OptionOutputFile {
 					path: output_file_path,
 					front_matter: None,

@@ -93,7 +93,7 @@ fn generate_feed(
 	let mut output = BufWriter::new(Vec::new());
 	let feed_url = complete_url(
 		&header.base_url,
-		&strip_prefix(&file_path, output_dir).to_string_lossy(),
+		&strip_prefix(file_path, output_dir).to_string_lossy(),
 	);
 	write_to_stream(
 		format!(
