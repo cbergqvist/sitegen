@@ -1,9 +1,9 @@
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::{hash_map::Entry, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, mpsc::channel, Mutex};
+use std::sync::{mpsc::channel, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 use std::{env, fs};

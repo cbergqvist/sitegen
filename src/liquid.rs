@@ -1,4 +1,5 @@
 use core::cmp::min;
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
@@ -65,7 +66,7 @@ pub fn process<T: Read + Seek>(
 	enum State {
 		RegularContent,
 		LastOpenBracket,
-		ValueStart,
+		ValueNextIdentifier,
 		ValueInIdentifier,
 		ValueEnd,
 		TagStart,
@@ -111,17 +112,28 @@ pub fn process<T: Read + Seek>(
 					}
 					state = State::RegularContent
 				}
-				State::ValueInIdentifier => {
-					if !skipping {
-						output_template_value(
-							&mut output_buf,
-							&String::from_utf8_lossy(&current_identifier),
-							&loop_stack,
-							context,
-						)
+				State::ValueNextIdentifier | State::ValueInIdentifier => {
+					if !current_identifier.is_empty()
+						|| !queued_identifiers.is_empty()
+					{
+						if !current_identifier.is_empty() {
+							queued_identifiers.push(
+								String::from_utf8_lossy(&current_identifier)
+									.to_string(),
+							);
+						}
+						if !skipping {
+							output_template_value(
+								&mut output_buf,
+								&queued_identifiers,
+								&loop_stack,
+								context,
+							)
+						}
+						current_identifier.clear();
+						queued_identifiers.clear();
+						state = State::ValueEnd
 					}
-					current_identifier.clear();
-					state = State::ValueEnd
 				}
 				State::WaitingForCloseBracket => panic_at_location(
 					"Expected close bracket but got newline.",
@@ -134,33 +146,34 @@ pub fn process<T: Read + Seek>(
 					context,
 				),
 				State::TagNextParameter | State::TagInParameter => {
-					if !current_identifier.is_empty() {
-						queued_identifiers.push(
-							String::from_utf8_lossy(&current_identifier)
-								.to_string(),
+					if !current_identifier.is_empty()
+						|| !queued_identifiers.is_empty()
+					{
+						if !current_identifier.is_empty() {
+							queued_identifiers.push(
+								String::from_utf8_lossy(&current_identifier)
+									.to_string(),
+							);
+						}
+						let function = &queued_identifiers[0];
+						let parameters = &queued_identifiers[1..];
+
+						run_function(
+							input_file,
+							&mut output_buf,
+							function,
+							parameters,
+							&mut loop_stack,
+							context,
 						);
+
+						current_identifier.clear();
+						queued_identifiers.clear();
+
+						state = State::TagEnd
 					}
-					let function = &queued_identifiers[0];
-					let parameters = &queued_identifiers[1..];
-
-					run_function(
-						input_file,
-						&mut output_buf,
-						function,
-						parameters,
-						&mut loop_stack,
-						context,
-					);
-
-					current_identifier.clear();
-					queued_identifiers.clear();
-
-					state = State::TagEnd
 				}
-				State::ValueStart
-				| State::ValueEnd
-				| State::TagStart
-				| State::TagEnd => {}
+				State::ValueEnd | State::TagStart | State::TagEnd => {}
 			}
 			position.line += 1;
 			position.column = 1;
@@ -175,7 +188,7 @@ pub fn process<T: Read + Seek>(
 					}
 				},
 				State::LastOpenBracket => match byte {
-					b'{' => state = State::ValueStart,
+					b'{' => state = State::ValueNextIdentifier,
 					b'%' => state = State::TagStart,
 					_ => {
 						if !skipping {
@@ -184,12 +197,33 @@ pub fn process<T: Read + Seek>(
 						state = State::RegularContent;
 					}
 				},
-				State::ValueStart => match byte {
+				State::ValueNextIdentifier => match byte {
 					b'{' => panic_at_location(
 						"Unexpected open bracket while in template mode.",
 						&position,
 						context,
 					),
+					b'}' => {
+						if !current_identifier.is_empty() {
+							queued_identifiers.push(
+								String::from_utf8_lossy(&current_identifier)
+									.to_string(),
+							);
+						}
+
+						if !skipping {
+							output_template_value(
+								&mut output_buf,
+								&queued_identifiers,
+								&loop_stack,
+								context,
+							);
+						}
+
+						current_identifier.clear();
+						queued_identifiers.clear();
+						state = State::WaitingForCloseBracket;
+					}
 					b' ' | b'\t' => {}
 					_ => {
 						current_identifier.push(byte);
@@ -199,18 +233,13 @@ pub fn process<T: Read + Seek>(
 				State::ValueInIdentifier => match byte {
 					b'}' => state = State::WaitingForCloseBracket,
 					b' ' | b'\t' => {
-						if !skipping {
-							output_template_value(
-								&mut output_buf,
-								&String::from_utf8_lossy(&current_identifier),
-								&loop_stack,
-								context,
-							);
-						}
-
+						assert!(!current_identifier.is_empty());
+						queued_identifiers.push(
+							String::from_utf8_lossy(&current_identifier)
+								.to_string(),
+						);
 						current_identifier.clear();
-
-						state = State::ValueEnd
+						state = State::ValueNextIdentifier
 					}
 					_ => current_identifier.push(byte),
 				},
@@ -368,12 +397,16 @@ fn panic_at_location(
 
 fn output_template_value(
 	mut output_buf: &mut BufWriter<Vec<u8>>,
-	name: &str,
+	identifiers: &[String],
 	loop_stack: &[LoopInfo],
 	context: &Context,
 ) {
-	match fetch_template_value(name, loop_stack, context) {
-		Value::Scalar(s) => write_to_stream(s.as_bytes(), &mut output_buf),
+	if identifiers.is_empty() {
+		panic!("Encountered empty template value section, missing name.")
+	}
+	let name = &identifiers[0];
+	let mut value = match fetch_template_value(name, loop_stack, context) {
+		Value::Scalar(s) => s,
 		Value::List(..) => panic!(
 			"Cannot output list value {} directly, maybe use a for-loop?",
 			name
@@ -381,7 +414,32 @@ fn output_template_value(
 		Value::Dictionary(..) => {
 			panic!("Cannot output dictionary value {} directly.", name)
 		}
+	};
+
+	let mut offset = 1;
+	while identifiers.len() > offset {
+		if identifiers[offset] != "|" {
+			panic!("Expected filter operator \"|\" as second identifier but got \"{}\".", identifiers[1]);
+		}
+
+		if identifiers.len() < offset + 1 {
+			panic!("Missing filter function after filter operator \"|\".");
+		}
+
+		let filter_function = &identifiers[offset + 1];
+		match filter_function.borrow() {
+			"downcase" => {
+				value = value.to_lowercase();
+				offset += 2;
+			}
+			"upcase" => {
+				value = value.to_uppercase();
+				offset += 2;
+			}
+			_ => panic!("Unhandled filter function: {}", filter_function),
+		}
 	}
+	write_to_stream(value.as_bytes(), &mut output_buf)
 }
 
 fn fetch_template_value(
