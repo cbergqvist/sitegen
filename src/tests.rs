@@ -3,17 +3,14 @@ use std::collections::HashMap;
 use std::io::{BufReader, BufWriter, Cursor};
 use std::path::PathBuf;
 
-use crate::front_matter;
+use crate::front_matter::FrontMatter;
 use crate::liquid;
 use crate::markdown;
 
-#[test]
-fn test_liquid_link() {
-	let input_file_path = PathBuf::from("./input/virtual_test.md");
-	let output_file_path = PathBuf::from("./output/virtual_test.html");
-	let front_matter = front_matter::FrontMatter {
-		title: "Title".to_string(),
-		date: None,
+fn create_front_matter(title: &str, date: Option<&str>) -> FrontMatter {
+	FrontMatter {
+		title: title.to_string(),
+		date: date.map(|s| s.to_string()),
 		published: true,
 		edited: None,
 		categories: Vec::new(),
@@ -21,7 +18,14 @@ fn test_liquid_link() {
 		layout: None,
 		custom_attributes: BTreeMap::new(),
 		end_position: 0,
-	};
+	}
+}
+
+#[test]
+fn test_liquid_link() {
+	let input_file_path = PathBuf::from("./input/virtual_test.md");
+	let output_file_path = PathBuf::from("./output/virtual_test.html");
+	let front_matter = create_front_matter("Title", None);
 	let mut input_file = BufReader::new(Cursor::new(
 		(r#"[Foo]({% link /virtual_test.md %})"#).as_bytes(),
 	));
@@ -61,20 +65,11 @@ fn test_liquid_link() {
 }
 
 #[test]
+#[should_panic(expected = "Content of ./input/virtual_test.md ended while still in state: TagStart")]
 fn test_liquid_unfinished() {
 	let input_file_path = PathBuf::from("./input/virtual_test.md");
 	let output_file_path = PathBuf::from("./output/virtual_test.html");
-	let front_matter = front_matter::FrontMatter {
-		title: "Title".to_string(),
-		date: None,
-		published: true,
-		edited: None,
-		categories: Vec::new(),
-		tags: Vec::new(),
-		layout: None,
-		custom_attributes: BTreeMap::new(),
-		end_position: 0,
-	};
+	let front_matter = create_front_matter("Title", None);
 	let mut input_file = BufReader::new(Cursor::new((r#"{% "#).as_bytes()));
 
 	let mut input_output_map = HashMap::new();
@@ -88,24 +83,22 @@ fn test_liquid_unfinished() {
 	let groups = HashMap::new();
 
 	let mut processed_markdown_content = BufWriter::new(Vec::new());
-	let result = std::panic::catch_unwind(move || {
-		liquid::process(
-			&mut input_file,
-			&mut processed_markdown_content,
-			&input_output_map,
-			&groups,
-			&liquid::Context {
-				input_file_path: &input_file_path,
-				output_file_path: &output_file_path,
-				front_matter: &front_matter,
-				html_content: None,
-				root_input_dir: &PathBuf::from("./input"),
-				root_output_dir: &PathBuf::from("./output"),
-			},
-		)
-	});
 
-	assert!(result.is_err());
+	// Expecting panic here:
+	liquid::process(
+		&mut input_file,
+		&mut processed_markdown_content,
+		&input_output_map,
+		&groups,
+		&liquid::Context {
+			input_file_path: &input_file_path,
+			output_file_path: &output_file_path,
+			front_matter: &front_matter,
+			html_content: None,
+			root_input_dir: &PathBuf::from("./input"),
+			root_output_dir: &PathBuf::from("./output"),
+		},
+	);
 }
 
 #[test]
@@ -116,28 +109,9 @@ fn test_liquid_for() {
 		PathBuf::from("./output/posts/virtual_test_a.html");
 	let output_file_path_b =
 		PathBuf::from("./output/posts/virtual_test_b.html");
-	let front_matter_a = front_matter::FrontMatter {
-		title: "Title A".to_string(),
-		date: Some("2001-01-19T20:10:01Z".to_string()),
-		published: true,
-		edited: None,
-		categories: Vec::new(),
-		tags: Vec::new(),
-		layout: None,
-		custom_attributes: BTreeMap::new(),
-		end_position: 0,
-	};
-	let front_matter_b = front_matter::FrontMatter {
-		title: "Title B".to_string(),
-		date: None,
-		published: true,
-		edited: None,
-		categories: Vec::new(),
-		tags: Vec::new(),
-		layout: None,
-		custom_attributes: BTreeMap::new(),
-		end_position: 0,
-	};
+	let front_matter_a = create_front_matter("Title A", Some("2001-01-19T20:10:01Z"));
+	let front_matter_b = create_front_matter("Title B", None);
+
 	let mut input_file = BufReader::new(Cursor::new(
 		(r#"{% for post in posts %}-{{ post.date }} <a href="{{ post.link }}">{{ post.title }}</a>-{% endfor %}"#).as_bytes(),
 	));
