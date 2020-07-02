@@ -176,7 +176,10 @@ fn build_initial_input_output_map(
 			markdown::compute_output_path(file_name, input_dir, output_dir);
 		checked_insert(
 			file_name.clone(),
-			output_file,
+			GroupedOutputFile {
+				file: output_file.file.convert_to_option(),
+				group: output_file.group,
+			},
 			&mut input_output_map,
 			&mut groups,
 		)
@@ -186,7 +189,10 @@ fn build_initial_input_output_map(
 			markdown::compute_output_path(file_name, input_dir, output_dir);
 		checked_insert(
 			file_name.clone(),
-			output_file,
+			GroupedOutputFile {
+				file: output_file.file.convert_to_option(),
+				group: output_file.group,
+			},
 			&mut input_output_map,
 			&mut groups,
 		)

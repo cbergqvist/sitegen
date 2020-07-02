@@ -24,6 +24,11 @@ pub struct ComputedTemplatePath {
 	pub group: Option<String>,
 }
 
+pub struct ComputedOutputPath {
+	pub file: OutputFile,
+	pub group: Option<String>,
+}
+
 pub struct GeneratedFile {
 	pub file: OutputFile,
 	pub group: Option<String>,
@@ -40,6 +45,15 @@ pub struct OutputFile {
 pub struct OptionOutputFile {
 	pub front_matter: Option<FrontMatter>,
 	pub path: PathBuf,
+}
+
+impl OutputFile {
+	pub fn convert_to_option(self) -> OptionOutputFile {
+		OptionOutputFile {
+			front_matter: Some(self.front_matter),
+			path: self.path,
+		}
+	}
 }
 
 pub struct InputFileCollection {
@@ -181,14 +195,7 @@ pub fn process_file(
 				root_output_dir,
 			);
 			if let Some(group) = grouped_file.group {
-				let file = OutputFile {
-					front_matter: grouped_file
-						.file
-						.front_matter
-						.clone()
-						.unwrap_or_else(|| panic!("Expect front matter for markdown files, but didn't get one for {}.", input_file_path.display())),
-					path: grouped_file.file.path.clone(),
-				};
+				let file = grouped_file.file.clone();
 				match groups.entry(group) {
 					Entry::Vacant(ve) => {
 						ve.insert(vec![file]);
@@ -196,7 +203,7 @@ pub fn process_file(
 					Entry::Occupied(oe) => oe.into_mut().push(file),
 				}
 			}
-			grouped_file.file
+			grouped_file.file.convert_to_option()
 		})
 		.clone();
 
@@ -317,6 +324,7 @@ pub fn process_template_file(
 				root_output_dir,
 			)
 			.file
+			.convert_to_option()
 		})
 		.clone();
 
@@ -399,7 +407,7 @@ pub fn compute_output_path(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-) -> GroupedOutputFile {
+) -> ComputedOutputPath {
 	let mut path = root_output_dir.clone();
 	if input_file_path.starts_with(root_input_dir) {
 		path.push(
@@ -454,11 +462,8 @@ pub fn compute_output_path(
 		group = Some(input_file_parent.to_string());
 	}
 
-	GroupedOutputFile {
-		file: OptionOutputFile {
-			path,
-			front_matter: Some(front_matter),
-		},
+	ComputedOutputPath {
+		file: OutputFile { path, front_matter },
 		group,
 	}
 }
