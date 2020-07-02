@@ -1,5 +1,4 @@
 use core::cmp::min;
-use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
@@ -17,6 +16,8 @@ pub struct Context<'a> {
 	pub html_content: Option<&'a str>,
 	pub root_input_dir: &'a PathBuf,
 	pub root_output_dir: &'a PathBuf,
+	pub input_output_map: &'a HashMap<PathBuf, OptionOutputFile>,
+	pub groups: &'a HashMap<String, Vec<OutputFile>>,
 }
 
 #[derive(Clone)]
@@ -58,8 +59,6 @@ struct LoopInfo {
 pub fn process<T: Read + Seek>(
 	input_file: &mut BufReader<T>,
 	mut output_buf: &mut BufWriter<Vec<u8>>,
-	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
-	groups: &HashMap<String, Vec<OutputFile>>,
 	context: &Context,
 ) {
 	#[derive(Debug)]
@@ -67,8 +66,7 @@ pub fn process<T: Read + Seek>(
 		RegularContent,
 		LastOpenBracket,
 		ValueStart,
-		ValueObject,
-		ValueField,
+		ValueInIdentifier,
 		ValueEnd,
 		TagStart,
 		TagFunction,
@@ -81,10 +79,8 @@ pub fn process<T: Read + Seek>(
 	let mut state = State::RegularContent;
 	let mut buf = [0_u8; 1];
 	let mut position = Position { line: 1, column: 1 };
-	let mut object = Vec::new();
-	let mut field = Vec::new();
-	let mut function = Vec::new();
-	let mut parameters: Vec<Vec<u8>> = Vec::new();
+	let mut current_identifier: Vec<u8> = Vec::new();
+	let mut queued_identifiers: Vec<String> = Vec::new();
 	let mut loop_stack: Vec<LoopInfo> = Vec::new();
 
 	loop {
@@ -115,47 +111,50 @@ pub fn process<T: Read + Seek>(
 					}
 					state = State::RegularContent
 				}
-				State::ValueObject => panic_at_location(
-					"Unexpected newline while reading value object identifier.",
-					position,
-					context,
-				),
-				State::ValueField => {
+				State::ValueInIdentifier => {
 					if !skipping {
 						output_template_value(
 							&mut output_buf,
-							&object,
-							&field,
-							context.front_matter,
-							context.html_content,
+							&String::from_utf8_lossy(&current_identifier),
 							&loop_stack,
+							context,
 						)
 					}
-					object.clear();
-					field.clear();
+					current_identifier.clear();
 					state = State::ValueEnd
 				}
 				State::WaitingForCloseBracket => panic_at_location(
 					"Expected close bracket but got newline.",
-					position,
+					&position,
 					context,
 				),
 				State::TagFunction => panic_at_location(
 					"Unexpected newline in the middle of function.",
-					position,
+					&position,
 					context,
 				),
 				State::TagNextParameter | State::TagInParameter => {
+					if !current_identifier.is_empty() {
+						queued_identifiers.push(
+							String::from_utf8_lossy(&current_identifier)
+								.to_string(),
+						);
+					}
+					let function = &queued_identifiers[0];
+					let parameters = &queued_identifiers[1..];
+
 					run_function(
 						input_file,
 						&mut output_buf,
-						&mut function,
-						&mut parameters,
-						input_output_map,
-						groups,
+						function,
+						parameters,
 						&mut loop_stack,
 						context,
 					);
+
+					current_identifier.clear();
+					queued_identifiers.clear();
+
 					state = State::TagEnd
 				}
 				State::ValueStart
@@ -188,116 +187,133 @@ pub fn process<T: Read + Seek>(
 				State::ValueStart => match byte {
 					b'{' => panic_at_location(
 						"Unexpected open bracket while in template mode.",
-						position,
+						&position,
 						context,
 					),
 					b' ' | b'\t' => {}
 					_ => {
-						object.push(byte);
-						state = State::ValueObject;
+						current_identifier.push(byte);
+						state = State::ValueInIdentifier;
 					}
 				},
-				State::ValueObject => {
-					if byte == b'.' {
-						state = State::ValueField;
-					} else {
-						object.push(byte);
-					}
-				}
-				State::ValueField => match byte {
-					b'.' => panic_at_location(
-						"Additional dot in template identifier.",
-						position,
-						context,
-					),
+				State::ValueInIdentifier => match byte {
 					b'}' => state = State::WaitingForCloseBracket,
 					b' ' | b'\t' => {
 						if !skipping {
 							output_template_value(
 								&mut output_buf,
-								&object,
-								&field,
-								context.front_matter,
-								context.html_content,
+								&String::from_utf8_lossy(&current_identifier),
 								&loop_stack,
+								context,
 							);
 						}
-						object.clear();
-						field.clear();
+
+						current_identifier.clear();
+
 						state = State::ValueEnd
 					}
-					_ => field.push(byte),
+					_ => current_identifier.push(byte),
 				},
 				State::ValueEnd => match byte {
 					b'}' => state = State::WaitingForCloseBracket,
 					b' ' | b'\t' => {}
 					_ => panic_at_location(
 						"Unexpected non-whitespace character.",
-						position,
+						&position,
 						context,
 					),
 				},
 				State::TagStart => match byte {
 					b'%' => panic_at_location(
 						"Unexpected % following tag start.",
-						position,
+						&position,
 						context,
 					),
 					b' ' | b'\t' => {}
 					_ => {
-						function.push(byte);
+						current_identifier.push(byte);
 						state = State::TagFunction;
 					}
 				},
 				State::TagFunction => match byte {
-					b' ' | b'\t' => state = State::TagNextParameter,
-					_ => function.push(byte),
+					b' ' | b'\t' => {
+						assert!(!current_identifier.is_empty());
+						queued_identifiers.push(
+							String::from_utf8_lossy(&current_identifier)
+								.to_string(),
+						);
+						current_identifier.clear();
+						state = State::TagNextParameter
+					}
+					_ => current_identifier.push(byte),
 				},
 				State::TagNextParameter => match byte {
 					b' ' | b'\t' => {}
 					b'%' => {
+						if !current_identifier.is_empty() {
+							queued_identifiers.push(
+								String::from_utf8_lossy(&current_identifier)
+									.to_string(),
+							);
+						}
+						let function = &queued_identifiers[0];
+						let parameters = &queued_identifiers[1..];
+
 						run_function(
 							input_file,
 							&mut output_buf,
-							&mut function,
-							&mut parameters,
-							input_output_map,
-							groups,
+							function,
+							parameters,
 							&mut loop_stack,
 							context,
 						);
+
+						current_identifier.clear();
+						queued_identifiers.clear();
+
 						state = State::WaitingForCloseBracket
 					}
 					_ => {
-						parameters.push(vec![byte]);
+						current_identifier.push(byte);
 						state = State::TagInParameter
 					}
 				},
-				State::TagInParameter => {
-					match byte {
-						b' ' | b'\t' => state = State::TagNextParameter,
-						b'%' => {
-							run_function(
-								input_file,
-								&mut output_buf,
-								&mut function,
-								&mut parameters,
-								input_output_map,
-								groups,
-								&mut loop_stack,
-								context,
-							);
-							state = State::WaitingForCloseBracket
-						}
-						_ => {
-							if let Some(last) = parameters.last_mut() {
-								last.push(byte)
-							} else {
-								panic!("Should not be in {:?} without any parameters.", state);
-							}
-						}
+				State::TagInParameter => match byte {
+					b' ' | b'\t' => {
+						assert!(!current_identifier.is_empty());
+						queued_identifiers.push(
+							String::from_utf8_lossy(&current_identifier)
+								.to_string(),
+						);
+						current_identifier.clear();
+						state = State::TagNextParameter;
 					}
-				}
+					b'%' => {
+						if !current_identifier.is_empty() {
+							queued_identifiers.push(
+								String::from_utf8_lossy(&current_identifier)
+									.to_string(),
+							);
+						}
+						let function = &queued_identifiers[0];
+						let parameters = &queued_identifiers[1..];
+
+						run_function(
+							input_file,
+							&mut output_buf,
+							function,
+							parameters,
+							&mut loop_stack,
+							context,
+						);
+
+						current_identifier.clear();
+						queued_identifiers.clear();
+
+						state = State::WaitingForCloseBracket
+					}
+					_ => current_identifier.push(byte),
+				},
 				State::TagEnd => match byte {
 					b'%' => state = State::WaitingForCloseBracket,
 					b' ' | b'\t' => {}
@@ -306,7 +322,7 @@ pub fn process<T: Read + Seek>(
 							"Unexpected non-whitespace character: \"{}\".",
 							byte as char
 						),
-						position,
+						&position,
 						context,
 					),
 				},
@@ -316,7 +332,7 @@ pub fn process<T: Read + Seek>(
 					} else {
 						panic_at_location(
 							"Missing double close-bracket.",
-							position,
+							&position,
 							context,
 						)
 					}
@@ -338,7 +354,7 @@ pub fn process<T: Read + Seek>(
 
 fn panic_at_location(
 	message: &str,
-	position: Position,
+	position: &Position,
 	context: &Context,
 ) -> ! {
 	panic!(
@@ -352,55 +368,40 @@ fn panic_at_location(
 
 fn output_template_value(
 	mut output_buf: &mut BufWriter<Vec<u8>>,
-	object: &[u8],
-	field: &[u8],
-	front_matter: &FrontMatter,
-	html_content: Option<&str>,
-	loop_stack: &Vec<LoopInfo>,
+	name: &str,
+	loop_stack: &[LoopInfo],
+	context: &Context,
 ) {
-	match fetch_template_value(
-		object,
-		field,
-		front_matter,
-		html_content,
-		loop_stack,
-	) {
+	match fetch_template_value(name, loop_stack, context) {
 		Value::Scalar(s) => write_to_stream(s.as_bytes(), &mut output_buf),
 		Value::List(..) => panic!(
-			"Cannot output list value {}.{} directly, maybe use a for-loop?",
-			String::from_utf8_lossy(object),
-			String::from_utf8_lossy(field)
+			"Cannot output list value {} directly, maybe use a for-loop?",
+			name
 		),
-		Value::Dictionary(..) => panic!(
-			"Cannot output dictionary value {}.{} directly.",
-			String::from_utf8_lossy(object),
-			String::from_utf8_lossy(field)
-		),
+		Value::Dictionary(..) => {
+			panic!("Cannot output dictionary value {} directly.", name)
+		}
 	}
 }
 
 fn fetch_template_value(
-	object: &[u8],
-	field: &[u8],
-	front_matter: &FrontMatter,
-	html_content: Option<&str>,
-	loop_stack: &Vec<LoopInfo>,
+	name: &str,
+	loop_stack: &[LoopInfo],
+	context: &Context,
 ) -> Value {
-	fetch_template_value_str(
-		&String::from_utf8_lossy(object),
-		&String::from_utf8_lossy(field),
-		front_matter,
-		html_content,
-		loop_stack,
-	)
+	let name_parts: Vec<&str> = name.split('.').collect();
+	match name_parts.len() {
+		1 => fetch_value(name, loop_stack, context),
+		2 => fetch_field(name_parts[0], name_parts[1], loop_stack, context),
+		_ => panic!("Unexpected identifier: {}", name),
+	}
 }
 
-fn fetch_template_value_str(
+fn fetch_field(
 	object: &str,
 	field: &str,
-	front_matter: &FrontMatter,
-	html_content: Option<&str>,
-	loop_stack: &Vec<LoopInfo>,
+	loop_stack: &[LoopInfo],
+	context: &Context,
 ) -> Value {
 	if object.is_empty() {
 		panic!("Empty object name.")
@@ -412,42 +413,42 @@ fn fetch_template_value_str(
 	if object == "page" {
 		match field {
 			"content" => {
-				if let Some(content) = html_content {
-					return Value::Scalar(String::from(content));
+				if let Some(content) = context.html_content {
+					Value::Scalar(String::from(content))
 				} else {
 					panic!("Requested content but none exists")
 				}
 			}
-			"date" => {
-				return Value::Scalar(
-					front_matter
-						.date
-						.as_ref()
-						.map_or_else(|| String::new(), |s| s.clone()),
-				)
-			}
-			"title" => return Value::Scalar(front_matter.title.clone()),
+			"date" => Value::Scalar(
+				context
+					.front_matter
+					.date
+					.as_ref()
+					.map_or_else(String::new, String::clone),
+			),
+			"title" => Value::Scalar(context.front_matter.title.clone()),
 			"published" => {
-				return Value::Scalar(String::from(if front_matter.published {
+				Value::Scalar(String::from(if context.front_matter.published {
 					"true"
 				} else {
 					"false"
 				}))
 			}
-			"edited" => {
-				return Value::Scalar(
-					front_matter
-						.edited
-						.as_ref()
-						.map_or_else(|| String::new(), |s| s.clone()),
-				)
-			}
+			"edited" => Value::Scalar(
+				context
+					.front_matter
+					.edited
+					.as_ref()
+					.map_or_else(String::new, String::clone),
+			),
 			// TODO: categories
 			// TODO: tags
 			// TODO: layout
 			_ => {
-				if let Some(value) = front_matter.custom_attributes.get(field) {
-					return Value::Scalar(value.to_string());
+				if let Some(value) =
+					context.front_matter.custom_attributes.get(field)
+				{
+					Value::Scalar(value.to_string())
 				} else {
 					panic!("Not yet supported field: {}.{}", object, field)
 				}
@@ -483,13 +484,11 @@ fn fetch_template_value_str(
 }
 
 fn fetch_value(
-	output_file_path: &PathBuf,
-	root_output_dir: &PathBuf,
 	name: &str,
-	groups: &HashMap<String, Vec<OutputFile>>,
-	loop_stack: &Vec<LoopInfo>,
+	loop_stack: &[LoopInfo],
+	context: &Context,
 ) -> Value {
-	if let Some(entries) = groups.get(name) {
+	if let Some(entries) = context.groups.get(name) {
 		let mut result = Vec::new();
 		for entry in entries {
 			let mut map = HashMap::new();
@@ -504,15 +503,15 @@ fn fetch_value(
 						.front_matter
 						.date
 						.as_ref()
-						.map_or_else(|| String::new(), |d| d.clone()),
+						.map_or_else(String::new, String::clone),
 				),
 			);
 			map.insert(
 				"link",
 				Value::Scalar(make_relative_link(
-					output_file_path,
+					context.output_file_path,
 					&entry.path,
-					root_output_dir,
+					context.root_output_dir,
 				)),
 			);
 
@@ -533,10 +532,8 @@ fn fetch_value(
 fn run_function<T: Read + Seek>(
 	input_file: &mut BufReader<T>,
 	mut output_buf: &mut BufWriter<Vec<u8>>,
-	function: &mut Vec<u8>,
-	parameters: &mut Vec<Vec<u8>>,
-	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
-	groups: &HashMap<String, Vec<OutputFile>>,
+	function: &str,
+	parameters: &[String],
 	loop_stack: &mut Vec<LoopInfo>,
 	context: &Context,
 ) {
@@ -548,11 +545,10 @@ fn run_function<T: Read + Seek>(
 		.last()
 		.map_or(false, |loop_info| loop_info.values.is_empty());
 
-	let function_str = String::from_utf8_lossy(function);
-	match function_str.borrow() {
-		"for" => start_for(
-			input_file, parameters, groups, loop_stack, skipping, context,
-		),
+	match function {
+		"for" => {
+			start_for(input_file, parameters, loop_stack, skipping, context)
+		}
 		"endfor" => {
 			if !parameters.is_empty() {
 				panic!(
@@ -568,14 +564,8 @@ fn run_function<T: Read + Seek>(
 				panic!("Expecting at least 3 parameters (x in y) in for-loop. Encountered: {:?}", parameters)
 			}
 			if !skipping {
-				let parameter_str = String::from_utf8_lossy(&parameters[0]);
-				include_file(
-					&mut output_buf,
-					&parameter_str,
-					input_output_map,
-					groups,
-					context,
-				)
+				let parameter = &parameters[0];
+				include_file(&mut output_buf, parameter, context)
 			}
 		}
 		"link" => {
@@ -583,27 +573,24 @@ fn run_function<T: Read + Seek>(
 				panic!("Expecting at least 3 parameters (x in y) in for-loop. Encountered: {:?}", parameters)
 			}
 			if !skipping {
-				let parameter_str = String::from_utf8_lossy(&parameters[0]);
+				let parameter = &parameters[0];
 				check_and_emit_link(
 					context.output_file_path,
 					&mut output_buf,
-					&parameter_str,
+					parameter,
 					context.root_input_dir,
 					context.root_output_dir,
-					input_output_map,
+					context.input_output_map,
 				)
 			}
 		}
-		_ => panic!("Unsupported function: {}", function_str),
+		_ => panic!("Unsupported function: {}", function),
 	}
-	function.clear();
-	parameters.clear();
 }
 
 fn start_for<T: Read + Seek>(
 	input_file: &mut BufReader<T>,
-	parameters: &Vec<Vec<u8>>,
-	groups: &HashMap<String, Vec<OutputFile>>,
+	parameters: &[String],
 	loop_stack: &mut Vec<LoopInfo>,
 	skipping: bool,
 	context: &Context,
@@ -612,48 +599,17 @@ fn start_for<T: Read + Seek>(
 		panic!("Expecting at least 3 parameters (x in y) in for-loop. Encountered: {:?}", parameters)
 	}
 
-	let variable = String::from_utf8_lossy(&parameters[0]).to_string();
+	let variable = &parameters[0];
 
-	if parameters[1] != b"in" {
+	if parameters[1] != "in" {
 		panic!("Expected for .. in ..");
 	}
 
-	let loop_values_name: Vec<&[u8]> =
-		parameters[2].as_slice().split(|b| *b == b'.').collect();
-	if loop_values_name.len() > 2 {
-		panic!(
-			"Expected variable or object.field loop value name, but got \"{}\", part count: {}",
-			String::from_utf8_lossy(&parameters[2]),
-			loop_values_name.len()
-		);
-	}
+	let loop_values_name = &parameters[2];
 	let loop_values: Vec<Value> = if skipping {
 		Vec::new()
 	} else {
-		let value = if loop_values_name.len() == 1 {
-			fetch_value(
-				context.output_file_path,
-				context.root_output_dir,
-				&String::from_utf8_lossy(loop_values_name[0]),
-				groups,
-				loop_stack,
-			)
-		} else if loop_values_name.len() == 2 {
-			fetch_template_value(
-				loop_values_name[0],
-				loop_values_name[1],
-				context.front_matter,
-				context.html_content,
-				loop_stack,
-			)
-		} else {
-			panic!(
-				"Unexpected variable name: {}",
-				String::from_utf8_lossy(&parameters[2])
-			)
-		};
-
-		match value {
+		match fetch_template_value(loop_values_name, loop_stack, context) {
 			Value::Scalar(s) => {
 				s.chars().map(|c| Value::Scalar(c.to_string())).collect()
 			}
@@ -667,13 +623,13 @@ fn start_for<T: Read + Seek>(
 			panic!("Expected 3 or 5 parameters to for loop of the form \"for .. in .. limit ..\", but got {} parameters.", parameters.len());
 		}
 
-		if parameters[3] != b"limit" {
+		if parameters[3] != "limit" {
 			panic!(
 				"Expected 4th parameter to for loop to be \"limit\" but got {}",
 			);
 		}
 
-		let limit_str = String::from_utf8_lossy(&parameters[4]);
+		let limit_str = &parameters[4];
 		limit_str.parse::<usize>().unwrap_or_else(|e| {
 			panic!("Failed converting {} to usize: {}", limit_str, e)
 		})
@@ -690,7 +646,7 @@ fn start_for<T: Read + Seek>(
 	loop_stack.push(LoopInfo {
 		end,
 		values: loop_values,
-		variable,
+		variable: variable.to_string(),
 		index: 0,
 		buffer_start_position: input_file
 			.seek(SeekFrom::Current(0))
@@ -729,15 +685,11 @@ fn end_for<T: Read + Seek>(
 
 fn include_file(
 	mut output_buf: &mut BufWriter<Vec<u8>>,
-	parameter_str: &str,
-	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
-	groups: &HashMap<String, Vec<OutputFile>>,
+	parameter: &str,
 	context: &Context,
 ) {
-	let included_file_path = context
-		.root_input_dir
-		.join("_includes")
-		.join(&*parameter_str);
+	let included_file_path =
+		context.root_input_dir.join("_includes").join(&*parameter);
 
 	let mut included_file = BufReader::new(
 		fs::File::open(&included_file_path).unwrap_or_else(|e| {
@@ -758,8 +710,6 @@ fn include_file(
 	process(
 		&mut included_file,
 		&mut output_buf,
-		input_output_map,
-		groups,
 		&Context {
 			input_file_path: &included_file_path,
 			..*context
@@ -770,19 +720,19 @@ fn include_file(
 fn check_and_emit_link(
 	output_file_path: &PathBuf,
 	output_buf: &mut BufWriter<Vec<u8>>,
-	parameter_str: &str,
+	parameter: &str,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
 	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
 ) {
-	let append_index_html = parameter_str.ends_with('/');
-	if !parameter_str.starts_with('/') {
+	let append_index_html = parameter.ends_with('/');
+	if !parameter.starts_with('/') {
 		panic!(
 			"Only absolute paths are allowed in links, but got: {}",
-			parameter_str
+			parameter
 		);
 	}
-	let mut path = root_input_dir.join(PathBuf::from(&parameter_str[1..]));
+	let mut path = root_input_dir.join(PathBuf::from(&parameter[1..]));
 	if append_index_html {
 		path = path.join(PathBuf::from("index.html"));
 	}

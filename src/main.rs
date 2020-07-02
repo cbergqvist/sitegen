@@ -24,7 +24,7 @@ mod websocket;
 mod tests;
 
 use markdown::{GroupedOutputFile, OptionOutputFile, OutputFile};
-use util::{write_to_stream, write_to_stream_log_count, Refresh};
+use util::{strip_prefix, write_to_stream, write_to_stream_log_count, Refresh};
 
 enum ReadResult {
 	GetRequest(PathBuf),
@@ -97,7 +97,7 @@ fn inner_main(config: &config::Config) {
 		);
 
 		atom::generate(
-			feed_groups,
+			&feed_groups,
 			&config.output_dir,
 			&config.base_url,
 			&config.author,
@@ -192,16 +192,8 @@ fn build_initial_input_output_map(
 		)
 	}
 	for file_name in &input_files.raw {
-		let output_file_path = output_dir.join(
-			file_name.strip_prefix(&input_dir).unwrap_or_else(|e| {
-				panic!(
-					"Failed stripping prefix {} from {}: {}",
-					input_dir.display(),
-					file_name.display(),
-					e
-				)
-			}),
-		);
+		let output_file_path =
+			output_dir.join(strip_prefix(file_name, &input_dir));
 		checked_insert(
 			file_name.clone(),
 			GroupedOutputFile {
@@ -297,7 +289,7 @@ fn checked_insert(
 			);
 		}
 		Entry::Vacant(ve) => {
-			let extension = ve.key().extension().map(|e| e.to_os_string());
+			let extension = ve.key().extension().map(OsStr::to_os_string);
 			ve.insert(value.file.clone());
 
 			if extension.as_deref()
@@ -307,10 +299,11 @@ fn checked_insert(
 			}
 
 			if let Some(group) = value.group {
+				let path = value.file.path;
 				let file = OutputFile {
 					front_matter: value.file.front_matter
-						.expect(&format!("Expect front matter for grouped files, but didn't get one for {}.", value.file.path.display())),
-					path: value.file.path,
+						.unwrap_or_else(|| panic!("Expect front matter for grouped files, but didn't get one for {}.", path.display())),
+					path,
 				};
 				match group_map.entry(group) {
 					Entry::Vacant(ve) => {
@@ -347,18 +340,8 @@ fn find_newest_file(
 			continue;
 		}
 
-		let unique_path = input_file
-			.strip_prefix(input_dir)
-			.unwrap_or_else(|e| {
-				panic!(
-					"Failed stripping prefix {} from {}: {}",
-					input_dir.display(),
-					input_file.display(),
-					e
-				)
-			})
-			.to_string_lossy();
-		if unique_path.starts_with('_') || unique_path.starts_with('.') {
+		let unique_path = strip_prefix(input_file, input_dir);
+		if unique_path.starts_with("_") || unique_path.starts_with(".") {
 			continue;
 		}
 
@@ -388,18 +371,7 @@ fn find_newest_file(
 		println!("Newest file: {}", &file.display());
 	}
 
-	newest_file.map(|p| {
-		p.strip_prefix(output_dir)
-			.unwrap_or_else(|e| {
-				panic!(
-					"Failed stripping prefix {} from {}: {}",
-					output_dir.display(),
-					p.display(),
-					e
-				)
-			})
-			.to_path_buf()
-	})
+	newest_file.map(|p| strip_prefix(p, output_dir))
 }
 
 fn spawn_listening_thread(
@@ -560,18 +532,8 @@ fn get_path_to_refresh(
 		match input_output_map.entry(input_file_path.clone()) {
 			Entry::Occupied(..) => {}
 			Entry::Vacant(ve) => {
-				let output_file_path = output_dir.join(
-					input_file_path.strip_prefix(&input_dir).unwrap_or_else(
-						|e| {
-							panic!(
-								"Failed stripping prefix {} from {}: {}",
-								input_dir.display(),
-								input_file_path.display(),
-								e
-							)
-						},
-					),
-				);
+				let output_file_path =
+					output_dir.join(strip_prefix(input_file_path, &input_dir));
 				ve.insert(OptionOutputFile {
 					path: output_file_path,
 					front_matter: None,
@@ -598,18 +560,7 @@ fn make_relative(input_file_path: &PathBuf, input_dir: &PathBuf) -> PathBuf {
 		panic!("Canonicalization of {} failed: {}", input_dir.display(), e)
 	});
 
-	input_dir.join(
-		input_file_path
-			.strip_prefix(&absolute_input_dir)
-			.unwrap_or_else(|e| {
-				panic!(
-					"Failed stripping prefix {} from {}: {}",
-					absolute_input_dir.display(),
-					input_file_path.display(),
-					e
-				)
-			}),
-	)
+	input_dir.join(strip_prefix(input_file_path, &absolute_input_dir))
 }
 
 fn handle_html_updated(
@@ -985,18 +936,7 @@ fn write_sitemap_xml(
 			continue;
 		}
 
-		let path =
-			output_file
-				.path
-				.strip_prefix(output_dir)
-				.unwrap_or_else(|e| {
-					panic!(
-						"Failed stripping prefix {} from {}: {}",
-						output_dir.display(),
-						output_file.path.display(),
-						e
-					)
-				});
+		let path = strip_prefix(&output_file.path, output_dir);
 		let mut output_url = base_url.to_string();
 		if path.file_name() == Some(OsStr::new("index.html")) {
 			output_url.push_str(&path.with_file_name("").to_string_lossy())

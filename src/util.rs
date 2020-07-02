@@ -40,16 +40,7 @@ pub fn copy_files_with_prefix(
 		}
 	}
 	for file_name in files {
-		let target = output_dir.join(
-			file_name.strip_prefix(&input_prefix).unwrap_or_else(|e| {
-				panic!(
-					"Failed stripping {}-prefix from {}: {}",
-					input_prefix.display(),
-					file_name.display(),
-					e
-				)
-			}),
-		);
+		let target = output_dir.join(strip_prefix(file_name, &input_prefix));
 		fs::copy(file_name, &target).unwrap_or_else(|e| {
 			panic!(
 				"Failed copying {} to {}: {}",
@@ -59,4 +50,17 @@ pub fn copy_files_with_prefix(
 			)
 		});
 	}
+}
+
+pub fn strip_prefix(path: &PathBuf, prefix: &PathBuf) -> PathBuf {
+	path.strip_prefix(prefix)
+		.unwrap_or_else(|e| {
+			panic!(
+				"Failed stripping prefix \"{}\" from \"{}\": {}",
+				prefix.display(),
+				path.display(),
+				e
+			)
+		})
+		.to_path_buf()
 }

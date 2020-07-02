@@ -44,8 +44,6 @@ fn test_liquid_link() {
 	liquid::process(
 		&mut input_file,
 		&mut processed_markdown_content,
-		&input_output_map,
-		&groups,
 		&liquid::Context {
 			input_file_path: &input_file_path,
 			output_file_path: &output_file_path,
@@ -53,6 +51,8 @@ fn test_liquid_link() {
 			html_content: None,
 			root_input_dir: &PathBuf::from("./input"),
 			root_output_dir: &PathBuf::from("./output"),
+			input_output_map: &input_output_map,
+			groups: &groups,
 		},
 	);
 
@@ -65,7 +65,9 @@ fn test_liquid_link() {
 }
 
 #[test]
-#[should_panic(expected = "Content of ./input/virtual_test.md ended while still in state: TagStart")]
+#[should_panic(
+	expected = "Content of ./input/virtual_test.md ended while still in state: TagStart"
+)]
 fn test_liquid_unfinished() {
 	let input_file_path = PathBuf::from("./input/virtual_test.md");
 	let output_file_path = PathBuf::from("./output/virtual_test.html");
@@ -88,8 +90,6 @@ fn test_liquid_unfinished() {
 	liquid::process(
 		&mut input_file,
 		&mut processed_markdown_content,
-		&input_output_map,
-		&groups,
 		&liquid::Context {
 			input_file_path: &input_file_path,
 			output_file_path: &output_file_path,
@@ -97,6 +97,8 @@ fn test_liquid_unfinished() {
 			html_content: None,
 			root_input_dir: &PathBuf::from("./input"),
 			root_output_dir: &PathBuf::from("./output"),
+			input_output_map: &input_output_map,
+			groups: &groups,
 		},
 	);
 }
@@ -109,7 +111,8 @@ fn test_liquid_for() {
 		PathBuf::from("./output/posts/virtual_test_a.html");
 	let output_file_path_b =
 		PathBuf::from("./output/posts/virtual_test_b.html");
-	let front_matter_a = create_front_matter("Title A", Some("2001-01-19T20:10:01Z"));
+	let front_matter_a =
+		create_front_matter("Title A", Some("2001-01-19T20:10:01Z"));
 	let front_matter_b = create_front_matter("Title B", None);
 
 	let mut input_file = BufReader::new(Cursor::new(
@@ -151,8 +154,6 @@ fn test_liquid_for() {
 	liquid::process(
 		&mut input_file,
 		&mut processed_markdown_content,
-		&input_output_map,
-		&groups,
 		&liquid::Context {
 			input_file_path: &input_file_path_a,
 			output_file_path: &output_file_path_a,
@@ -160,6 +161,8 @@ fn test_liquid_for() {
 			html_content: None,
 			root_input_dir: &PathBuf::from("./input"),
 			root_output_dir: &PathBuf::from("./output"),
+			input_output_map: &input_output_map,
+			groups: &groups,
 		},
 	);
 

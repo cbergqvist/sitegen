@@ -11,6 +11,7 @@ use pulldown_cmark::{html, Parser};
 use crate::front_matter::FrontMatter;
 use crate::liquid;
 use crate::util;
+use crate::util::strip_prefix;
 
 #[derive(Clone)]
 pub struct GroupedOutputFile {
@@ -185,7 +186,7 @@ pub fn process_file(
 						.file
 						.front_matter
 						.clone()
-						.expect(&format!("Expect front matter for markdown files, but didn't get one for {}.", input_file_path.display())),
+						.unwrap_or_else(|| panic!("Expect front matter for markdown files, but didn't get one for {}.", input_file_path.display())),
 					path: grouped_file.file.path.clone(),
 				};
 				match groups.entry(group) {
@@ -204,29 +205,24 @@ pub fn process_file(
 			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
 		}));
 
-	let front_matter = if let Some(fm) = output_file.front_matter {
-		fm
-	} else {
+	let output_file_path = output_file.path;
+	let front_matter = output_file.front_matter.unwrap_or_else(|| {
 		panic!(
 			"Expecting at least a default FrontMatter instance on file: {}",
-			output_file.path.display()
+			output_file_path.display()
 		)
-	};
+	});
 	input_file
 		.seek(SeekFrom::Start(front_matter.end_position))
 		.unwrap_or_else(|e| {
 			panic!("Failed seeking in {}: {}", input_file_path.display(), e)
 		});
 
-	let output_file_path = output_file.path;
-
 	let mut processed_markdown_content = BufWriter::new(Vec::new());
 
 	liquid::process(
 		&mut input_file,
 		&mut processed_markdown_content,
-		input_output_map,
-		groups,
 		&liquid::Context {
 			input_file_path,
 			output_file_path: &output_file_path,
@@ -234,6 +230,8 @@ pub fn process_file(
 			html_content: None,
 			root_input_dir,
 			root_output_dir,
+			input_output_map,
+			groups,
 		},
 	);
 
@@ -264,8 +262,6 @@ pub fn process_file(
 	liquid::process(
 		&mut template_file,
 		&mut output_buf,
-		input_output_map,
-		groups,
 		&liquid::Context {
 			input_file_path: &template_path_result.path,
 			output_file_path: &output_file_path,
@@ -273,6 +269,8 @@ pub fn process_file(
 			html_content: Some(&html_content),
 			root_input_dir,
 			root_output_dir,
+			input_output_map,
+			groups,
 		},
 	);
 
@@ -288,18 +286,8 @@ pub fn process_file(
 
 	GeneratedFile {
 		file: OutputFile {
-			front_matter: front_matter,
-			path: output_file_path
-				.strip_prefix(root_output_dir)
-				.unwrap_or_else(|e| {
-					panic!(
-						"Failed stripping prefix \"{}\" from \"{}\": {}",
-						root_output_dir.display(),
-						output_file_path.display(),
-						e
-					)
-				})
-				.to_path_buf(),
+			front_matter,
+			path: strip_prefix(&output_file_path, root_output_dir),
 		},
 		group: template_path_result.group,
 		html_content,
@@ -337,29 +325,24 @@ pub fn process_template_file(
 			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
 		}));
 
-	let front_matter = if let Some(fm) = output_file.front_matter {
-		fm
-	} else {
+	let output_file_path = output_file.path;
+	let front_matter = output_file.front_matter.unwrap_or_else(|| {
 		panic!(
 			"Expecting at least a default FrontMatter instance on file: {}",
-			output_file.path.display()
+			output_file_path.display()
 		)
-	};
+	});
 	input_file
 		.seek(SeekFrom::Start(front_matter.end_position))
 		.unwrap_or_else(|e| {
 			panic!("Failed seeking in {}: {}", input_file_path.display(), e)
 		});
 
-	let output_file_path = output_file.path;
-
 	let mut output_buf = BufWriter::new(Vec::new());
 
 	liquid::process(
 		&mut input_file,
 		&mut output_buf,
-		input_output_map,
-		groups,
 		&liquid::Context {
 			input_file_path,
 			output_file_path: &output_file_path,
@@ -367,6 +350,8 @@ pub fn process_template_file(
 			html_content: None,
 			root_input_dir,
 			root_output_dir,
+			input_output_map,
+			groups,
 		},
 	);
 
@@ -379,17 +364,7 @@ pub fn process_template_file(
 		timer.elapsed().as_millis(),
 	);
 
-	output_file_path
-		.strip_prefix(root_output_dir)
-		.unwrap_or_else(|e| {
-			panic!(
-				"Failed stripping prefix \"{}\" from \"{}\": {}",
-				root_output_dir.display(),
-				output_file_path.display(),
-				e
-			)
-		})
-		.to_path_buf()
+	strip_prefix(&output_file_path, root_output_dir)
 }
 
 fn write_buffer_to_file(buffer: &[u8], path: &PathBuf) {
@@ -428,16 +403,7 @@ pub fn compute_output_path(
 	let mut path = root_output_dir.clone();
 	if input_file_path.starts_with(root_input_dir) {
 		path.push(
-			input_file_path
-				.strip_prefix(root_input_dir)
-				.unwrap_or_else(|e| {
-					panic!(
-						"Failed stripping prefix \"{}\" from \"{}\": {}",
-						root_input_dir.display(),
-						input_file_path.display(),
-						e
-					)
-				})
+			strip_prefix(input_file_path, root_input_dir)
 				.with_extension("html"),
 		);
 	} else {
@@ -451,16 +417,7 @@ pub fn compute_output_path(
 			});
 		if input_file_path.starts_with(&full_root_input_path) {
 			path.push(
-				&input_file_path
-					.strip_prefix(&full_root_input_path)
-					.unwrap_or_else(|e| {
-						panic!(
-							"Failed stripping prefix \"{}\" from \"{}\": {}",
-							full_root_input_path.display(),
-							input_file_path.display(),
-							e
-						)
-					})
+				strip_prefix(input_file_path, &full_root_input_path)
 					.with_extension("html"),
 			);
 		} else {

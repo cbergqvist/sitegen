@@ -5,7 +5,7 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 use crate::front_matter;
-use crate::util::write_to_stream;
+use crate::util::{strip_prefix, write_to_stream};
 
 pub struct FeedHeader {
 	pub title: String,
@@ -22,13 +22,13 @@ pub struct FeedEntry {
 }
 
 pub fn generate(
-	groups: HashMap<String, Vec<FeedEntry>>,
+	groups: &HashMap<String, Vec<FeedEntry>>,
 	output_dir: &PathBuf,
 	base_url: &str,
 	author: &str,
 	email: &str,
 ) {
-	for (group, entries) in &groups {
+	for (group, entries) in groups {
 		let mut latest_update: Option<&String> = None;
 		for entry in entries {
 			if let Some(date) = &entry.front_matter.date {
@@ -62,7 +62,7 @@ pub fn generate(
 			author_email: email.to_string(),
 		};
 
-		generate_feed(&feed_name, &header, &entries, output_dir);
+		generate_feed(&feed_name, &header, entries, output_dir);
 	}
 }
 
@@ -93,17 +93,7 @@ fn generate_feed(
 	let mut output = BufWriter::new(Vec::new());
 	let feed_url = complete_url(
 		&header.base_url,
-		&file_path
-			.strip_prefix(output_dir)
-			.unwrap_or_else(|e| {
-				panic!(
-					"Failed stripping prefix {} from {}: {}",
-					output_dir.display(),
-					file_path.display(),
-					e
-				)
-			})
-			.to_string_lossy(),
+		&strip_prefix(&file_path, output_dir).to_string_lossy(),
 	);
 	write_to_stream(
 		format!(
