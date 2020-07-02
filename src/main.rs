@@ -297,7 +297,15 @@ fn checked_insert(
 			);
 		}
 		Entry::Vacant(ve) => {
+			let extension = ve.key().extension().map(|e| e.to_os_string());
 			ve.insert(value.file.clone());
+
+			if extension.as_deref()
+				!= Some(OsStr::new(util::MARKDOWN_EXTENSION))
+			{
+				return;
+			}
+
 			if let Some(group) = value.group {
 				let file = OutputFile {
 					front_matter: value.file.front_matter
