@@ -655,11 +655,7 @@ fn start_for<T: Read + Seek>(
 
 		match value {
 			Value::Scalar(s) => {
-				let mut result = Vec::new();
-				for c in s.chars() {
-					result.push(Value::Scalar(c.to_string()))
-				}
-				result
+				s.chars().map(|c| Value::Scalar(c.to_string())).collect()
 			}
 			Value::List(l) => l.values,
 			Value::Dictionary(dict) => dict.map.values().cloned().collect(),
