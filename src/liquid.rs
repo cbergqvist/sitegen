@@ -673,6 +673,13 @@ fn fetch_field(
 			}
 		}
 
+		if let Some(entries) = context.groups.get(object) {
+			match field {
+				"count" => return Value::Scalar(entries.len().to_string()),
+				_ => panic!("Unhandled field {} on object {}.", field, object),
+			}
+		}
+
 		panic!("Unhandled object \"{}\"", object)
 	}
 }
