@@ -27,21 +27,26 @@ struct Position {
 	column: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct List {
 	values: Vec<Value>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct Dictionary {
 	map: HashMap<&'static str, Value>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum Value {
 	Scalar(String),
 	List(List),
 	Dictionary(Dictionary),
+}
+
+enum ControlFlow {
+	For(LoopInfo),
+	If(bool),
 }
 
 struct LoopInfo {
@@ -83,14 +88,16 @@ pub fn process<T: Read + Seek>(
 		Percent,
 		Newline,
 		Whitespace,
+		Quote,
 		Other(u8),
 	}
 
 	let mut state = State::RegularContent;
 	let mut position = Position { line: 1, column: 1 };
 	let mut current_identifier: Vec<u8> = Vec::new();
+	let mut parsing_literal = false;
 	let mut queued_identifiers: Vec<String> = Vec::new();
-	let mut loop_stack: Vec<LoopInfo> = Vec::new();
+	let mut cf_stack: Vec<ControlFlow> = Vec::new();
 
 	loop {
 		let byte: u8 = {
@@ -114,12 +121,14 @@ pub fn process<T: Read + Seek>(
 			b'%' => Char::Percent,
 			b'\n' | b'\r' => Char::Newline,
 			b' ' | b'\t' => Char::Whitespace,
+			b'"' => Char::Quote,
 			_ => Char::Other(byte),
 		};
 
-		let skipping = loop_stack
-			.last()
-			.map_or(false, |loop_info| loop_info.values.is_empty());
+		let skipping = cf_stack.last().map_or(false, |cf| match cf {
+			ControlFlow::For(loop_info) => loop_info.values.is_empty(),
+			ControlFlow::If(cond) => !*cond,
+		});
 
 		match state {
 			State::RegularContent => match c {
@@ -136,6 +145,7 @@ pub fn process<T: Read + Seek>(
 				Char::CloseCurly
 				| Char::Newline
 				| Char::Whitespace
+				| Char::Quote
 				| Char::Other(..) => {
 					if !skipping {
 						write_to_stream(&[b'{', byte], output_buf)
@@ -156,12 +166,13 @@ pub fn process<T: Read + Seek>(
 						output_template_value(
 							&mut output_buf,
 							&queued_identifiers,
-							&loop_stack,
+							&cf_stack,
 							context,
 						);
 					}
 
 					current_identifier.clear();
+					parsing_literal = false;
 					queued_identifiers.clear();
 					state = match c {
 						Char::CloseCurly => State::WaitingForCloseBracket,
@@ -170,68 +181,99 @@ pub fn process<T: Read + Seek>(
 					}
 				}
 				Char::Whitespace => {}
+				Char::Quote => {
+					parsing_literal = true;
+					current_identifier.push(byte);
+					state = State::ValueInIdentifier;
+				}
 				Char::Percent | Char::Other(..) => {
 					current_identifier.push(byte);
 					state = State::ValueInIdentifier;
 				}
 			},
-			State::ValueInIdentifier => match c {
-				Char::CloseCurly => state = State::WaitingForCloseBracket,
-				Char::Whitespace => {
-					assert!(!current_identifier.is_empty());
-					queued_identifiers.push(
-						String::from_utf8_lossy(&current_identifier)
-							.to_string(),
-					);
-					current_identifier.clear();
-					state = State::ValueNextIdentifier
-				}
-				Char::Newline => {
-					if !current_identifier.is_empty()
-						|| !queued_identifiers.is_empty()
-					{
-						if !current_identifier.is_empty() {
-							queued_identifiers.push(
-								String::from_utf8_lossy(&current_identifier)
-									.to_string(),
-							);
+			State::ValueInIdentifier => if parsing_literal {
+				if current_identifier.len() > 1 && current_identifier.last() == Some(&b'"') {
+					match c {
+						Char::Whitespace | Char::Newline => {
+							queued_identifiers.push(String::from_utf8_lossy(&current_identifier).to_string());
+							current_identifier.clear();
+							parsing_literal = false;
+							state = State::ValueNextIdentifier
+						},
+						Char::Percent | Char::OpenCurly | Char::CloseCurly | Char::Quote | Char::Other(..) => {
+							panic!("Already had 2 quotes in string literal: {}", String::from_utf8_lossy(&current_identifier))
 						}
-						if !skipping {
-							output_template_value(
-								&mut output_buf,
-								&queued_identifiers,
-								&loop_stack,
-								context,
-							)
-						}
-						current_identifier.clear();
-						queued_identifiers.clear();
-						state = State::ValueEnd
 					}
-				}
-				Char::OpenCurly | Char::Percent | Char::Other(..) => {
+				} else {
 					current_identifier.push(byte)
+				}
+			} else {
+				match c {
+					Char::CloseCurly => state = State::WaitingForCloseBracket,
+					Char::Whitespace => {
+						assert!(!current_identifier.is_empty());
+						queued_identifiers.push(
+							String::from_utf8_lossy(&current_identifier)
+								.to_string(),
+						);
+						current_identifier.clear();
+						state = State::ValueNextIdentifier
+					}
+					Char::Newline => {
+						if !current_identifier.is_empty()
+							|| !queued_identifiers.is_empty()
+						{
+							if !current_identifier.is_empty() {
+								queued_identifiers.push(
+									String::from_utf8_lossy(&current_identifier)
+										.to_string(),
+								);
+							}
+							if !skipping {
+								output_template_value(
+									&mut output_buf,
+									&queued_identifiers,
+									&cf_stack,
+									context,
+								)
+							}
+							current_identifier.clear();
+							queued_identifiers.clear();
+							state = State::ValueEnd
+						}
+					}
+					Char::Quote => panic_at_location(
+						"Unexpected quote (\") in the middle of non-literal.",
+						&position,
+						context,
+					),
+					Char::OpenCurly | Char::Percent | Char::Other(..) => {
+						current_identifier.push(byte)
+					}
 				}
 			},
 			State::ValueEnd => match c {
 				Char::CloseCurly => state = State::WaitingForCloseBracket,
 				Char::Whitespace | Char::Newline => {}
-				Char::OpenCurly | Char::Percent | Char::Other(..) => {
-					panic_at_location(
-						&format!("Unexpected non-whitespace character \"{}\" when looking for value end curly braces.",
-							byte as char
-						),
-						&position,
-						context,
-					)
-				}
+				Char::OpenCurly | Char::Percent | Char::Quote | Char::Other(..) => panic_at_location(
+					&format!("Unexpected non-whitespace character \"{}\" when looking for value end curly braces.",
+						byte as char
+					),
+					&position,
+					context,
+				)
 			},
 			State::TagStart => match c {
 				Char::Percent | Char::OpenCurly | Char::CloseCurly => panic_at_location(
 					&format!(
-						"Unexpected character \"{}\" following tag start.",
+						"Unexpected character \"{}\" following tag start when expecting function name.",
 						byte as char
 					),
+					&position,
+					context,
+				),
+				Char::Quote => panic_at_location(
+					"Unexpected quote (\") following tag start when expecting function name.",
 					&position,
 					context,
 				),
@@ -255,6 +297,11 @@ pub fn process<T: Read + Seek>(
 					&position,
 					context,
 				),
+				Char::Quote => panic_at_location(
+					"Unexpected quote (\") in the middle of function name.",
+					&position,
+					context,
+				),
 				Char::Whitespace => {
 					assert!(!current_identifier.is_empty());
 					queued_identifiers.push(
@@ -262,6 +309,7 @@ pub fn process<T: Read + Seek>(
 							.to_string(),
 					);
 					current_identifier.clear();
+					assert!(!parsing_literal);
 					state = State::TagNextParameter
 				}
 				Char::Other(..) => current_identifier.push(byte),
@@ -286,12 +334,13 @@ pub fn process<T: Read + Seek>(
 						&mut output_buf,
 						function,
 						parameters,
-						&mut loop_stack,
+						&mut cf_stack,
 						skipping,
 						context,
 					);
 
 					current_identifier.clear();
+					assert!(!parsing_literal);
 					queued_identifiers.clear();
 
 					state = match c {
@@ -300,55 +349,83 @@ pub fn process<T: Read + Seek>(
 						_ => panic!("WTF?"),
 					}
 				}
+				Char::Quote => {
+					current_identifier.push(byte);
+					parsing_literal = true;
+					state = State::TagInParameter
+				}
 				Char::Other(..) => {
 					current_identifier.push(byte);
 					state = State::TagInParameter
 				}
 			},
-			State::TagInParameter => match c {
-				Char::Whitespace => {
-					assert!(!current_identifier.is_empty());
-					queued_identifiers.push(
-						String::from_utf8_lossy(&current_identifier)
-							.to_string(),
-					);
-					current_identifier.clear();
-					state = State::TagNextParameter;
+			State::TagInParameter => if parsing_literal {
+				if current_identifier.len() > 1 && current_identifier.last() == Some(&b'"') {
+					match c {
+						Char::Whitespace | Char::Newline => {
+							queued_identifiers.push(String::from_utf8_lossy(&current_identifier).to_string());
+							current_identifier.clear();
+							parsing_literal = false;
+							state = State::TagNextParameter
+						},
+						Char::Percent | Char::OpenCurly | Char::CloseCurly | Char::Quote | Char::Other(..) => {
+							panic!("Already had 2 quotes in string literal ({}) when encountering: {}", String::from_utf8_lossy(&current_identifier), byte as char)
+						}
+					}
+				} else {
+					current_identifier.push(byte)
 				}
-				Char::Newline => {
-					if !current_identifier.is_empty() {
+			} else {
+				match c {
+					Char::Whitespace => {
+						assert!(!current_identifier.is_empty());
 						queued_identifiers.push(
 							String::from_utf8_lossy(&current_identifier)
 								.to_string(),
 						);
+						current_identifier.clear();
+						state = State::TagNextParameter;
 					}
-					let function = &queued_identifiers[0];
-					let parameters = &queued_identifiers[1..];
+					Char::Newline => {
+						if !current_identifier.is_empty() {
+							queued_identifiers.push(
+								String::from_utf8_lossy(&current_identifier)
+									.to_string(),
+							);
+						}
+						let function = &queued_identifiers[0];
+						let parameters = &queued_identifiers[1..];
 
-					run_function(
-						input_file,
-						&mut output_buf,
-						function,
-						parameters,
-						&mut loop_stack,
-						skipping,
+						run_function(
+							input_file,
+							&mut output_buf,
+							function,
+							parameters,
+							&mut cf_stack,
+							skipping,
+							context,
+						);
+
+						current_identifier.clear();
+						queued_identifiers.clear();
+
+						state = State::WaitingForCloseBracket
+					}
+					Char::Quote => panic_at_location(
+						"Unexpected quote (\") in the middle of non-literal.",
+						&position,
 						context,
-					);
-
-					current_identifier.clear();
-					queued_identifiers.clear();
-
-					state = State::WaitingForCloseBracket
+					),
+					Char::OpenCurly
+					| Char::CloseCurly
+					| Char::Percent
+					| Char::Other(..) => current_identifier.push(byte),
 				}
-				Char::OpenCurly
-				| Char::CloseCurly
-				| Char::Percent
-				| Char::Other(..) => current_identifier.push(byte),
 			},
 			State::TagEnd => match c {
 				Char::Percent => state = State::WaitingForCloseBracket,
 				Char::Whitespace | Char::Newline => {}
-				Char::OpenCurly | Char::CloseCurly | Char::Other(..) => {
+				Char::OpenCurly | Char::CloseCurly | Char::Quote | Char::Other(..) => {
 					panic_at_location(
 						&format!(
 							"Unexpected character \"{}\" when looking for tag end.",
@@ -365,6 +442,7 @@ pub fn process<T: Read + Seek>(
 				| Char::Percent
 				| Char::Newline
 				| Char::Whitespace
+				| Char::Quote
 				| Char::Other(..) => panic_at_location(
 					"Missing close-bracket.",
 					&position,
@@ -408,14 +486,14 @@ fn panic_at_location(
 fn output_template_value(
 	mut output_buf: &mut BufWriter<Vec<u8>>,
 	identifiers: &[String],
-	loop_stack: &[LoopInfo],
+	cf_stack: &[ControlFlow],
 	context: &Context,
 ) {
 	if identifiers.is_empty() {
 		panic!("Encountered empty template value section, missing name.")
 	}
 	let name = &identifiers[0];
-	let mut value = match fetch_template_value(name, loop_stack, context) {
+	let mut value = match fetch_template_value(name, cf_stack, context) {
 		Value::Scalar(s) => s,
 		Value::List(..) => panic!(
 			"Cannot output list value {} directly, maybe use a for-loop?",
@@ -454,13 +532,16 @@ fn output_template_value(
 
 fn fetch_template_value(
 	name: &str,
-	loop_stack: &[LoopInfo],
+	cf_stack: &[ControlFlow],
 	context: &Context,
 ) -> Value {
+	if name.len() > 1 && name.starts_with('"') && name.ends_with('"') {
+		return Value::Scalar(name[1..name.len() - 1].to_string());
+	}
 	let name_parts: Vec<&str> = name.split('.').collect();
 	match name_parts.len() {
-		1 => fetch_value(name, loop_stack, context),
-		2 => fetch_field(name_parts[0], name_parts[1], loop_stack, context),
+		1 => fetch_value(name, cf_stack, context),
+		2 => fetch_field(name_parts[0], name_parts[1], cf_stack, context),
 		_ => panic!("Unexpected identifier: {}", name),
 	}
 }
@@ -468,7 +549,7 @@ fn fetch_template_value(
 fn fetch_field(
 	object: &str,
 	field: &str,
-	loop_stack: &[LoopInfo],
+	cf_stack: &[ControlFlow],
 	context: &Context,
 ) -> Value {
 	if object.is_empty() {
@@ -523,27 +604,32 @@ fn fetch_field(
 			}
 		}
 	} else {
-		for loop_element in loop_stack.iter().rev() {
-			if loop_element.variable == object {
-				let value = &loop_element.values[loop_element.index];
-				match value {
-					Value::Dictionary(dict) => {
-						return dict
-							.map
-							.get(field)
-							.unwrap_or_else(|| {
-								panic!(
-									"Unhandled field \"{}.{}\"",
-									object, field
-								)
-							})
-							.clone();
+		for cf in cf_stack.iter().rev() {
+			match cf {
+				ControlFlow::For(loop_element) => {
+					if loop_element.variable == object {
+						let value = &loop_element.values[loop_element.index];
+						match value {
+							Value::Dictionary(dict) => {
+								return dict
+									.map
+									.get(field)
+									.unwrap_or_else(|| {
+										panic!(
+											"Unhandled field \"{}.{}\"",
+											object, field
+										)
+									})
+									.clone();
+							}
+							_ => panic!(
+								"Unexpected type of value in \"{}(.{})\": {:?}",
+								object, field, value
+							),
+						}
 					}
-					_ => panic!(
-						"Unexpected type of value in \"{}(.{})\": {:?}",
-						object, field, value
-					),
 				}
+				ControlFlow::If(..) => {}
 			}
 		}
 
@@ -553,7 +639,7 @@ fn fetch_field(
 
 fn fetch_value(
 	name: &str,
-	loop_stack: &[LoopInfo],
+	cf_stack: &[ControlFlow],
 	context: &Context,
 ) -> Value {
 	if let Some(entries) = context.groups.get(name) {
@@ -588,9 +674,14 @@ fn fetch_value(
 		return Value::List(List { values: result });
 	}
 
-	for loop_element in loop_stack.iter().rev() {
-		if loop_element.variable == name {
-			return loop_element.values[loop_element.index].clone();
+	for cf in cf_stack.iter().rev() {
+		match cf {
+			ControlFlow::For(loop_element) => {
+				if loop_element.variable == name {
+					return loop_element.values[loop_element.index].clone();
+				}
+			}
+			ControlFlow::If(..) => {}
 		}
 	}
 
@@ -602,7 +693,7 @@ fn run_function<T: Read + Seek>(
 	mut output_buf: &mut BufWriter<Vec<u8>>,
 	function: &str,
 	parameters: &[String],
-	loop_stack: &mut Vec<LoopInfo>,
+	cf_stack: &mut Vec<ControlFlow>,
 	skipping: bool,
 	context: &Context,
 ) {
@@ -611,19 +702,10 @@ fn run_function<T: Read + Seek>(
 	}
 
 	match function {
-		"for" => {
-			start_for(input_file, parameters, loop_stack, skipping, context)
-		}
-		"endfor" => {
-			if !parameters.is_empty() {
-				panic!(
-					"Expecting no parameters to endfor. Encountered: {:?}",
-					parameters
-				)
-			}
-
-			end_for(input_file, loop_stack)
-		}
+		"if" => start_if(parameters, cf_stack, skipping, context),
+		"endif" => end_if(parameters, cf_stack),
+		"for" => start_for(input_file, parameters, cf_stack, skipping, context),
+		"endfor" => end_for(input_file, parameters, cf_stack),
 		"include" => {
 			if parameters.len() != 1 {
 				panic!("Expecting at least 3 parameters (x in y) in for-loop. Encountered: {:?}", parameters)
@@ -653,10 +735,62 @@ fn run_function<T: Read + Seek>(
 	}
 }
 
+fn start_if(
+	parameters: &[String],
+	cf_stack: &mut Vec<ControlFlow>,
+	skipping: bool,
+	context: &Context,
+) {
+	if skipping {
+		cf_stack.push(ControlFlow::If(false));
+		return;
+	}
+
+	if parameters.is_empty() {
+		panic!("if-statement lacks conditional expression.")
+	}
+
+	if parameters.len() != 3 {
+		panic!("Unsupported conditional expression: {:?}", parameters)
+	}
+
+	let lhs = fetch_template_value(&parameters[0], cf_stack, context);
+	let rhs = fetch_template_value(&parameters[2], cf_stack, context);
+
+	match parameters[1].borrow() {
+		"==" => {
+			let equal = lhs == rhs;
+			cf_stack.push(ControlFlow::If(equal))
+		}
+		_ => panic!("Unsupported operator: {:?}", parameters[1]),
+	}
+}
+
+fn end_if(parameters: &[String], cf_stack: &mut Vec<ControlFlow>) {
+	if !parameters.is_empty() {
+		panic!(
+			"Expecting no parameters to endif. Encountered: {:?}",
+			parameters
+		)
+	}
+
+	if cf_stack.is_empty() {
+		panic!("Encountered endif without preceding if.");
+	}
+	let last_index = cf_stack.len() - 1;
+	let cf = &mut cf_stack[last_index];
+	match cf {
+		ControlFlow::If(..) => {
+			cf_stack.pop();
+		}
+		_ => panic!("Encountered endif without match preceeding if."),
+	}
+}
+
 fn start_for<T: Read + Seek>(
 	input_file: &mut BufReader<T>,
 	parameters: &[String],
-	loop_stack: &mut Vec<LoopInfo>,
+	cf_stack: &mut Vec<ControlFlow>,
 	skipping: bool,
 	context: &Context,
 ) {
@@ -674,7 +808,7 @@ fn start_for<T: Read + Seek>(
 	let loop_values: Vec<Value> = if skipping {
 		Vec::new()
 	} else {
-		match fetch_template_value(loop_values_name, loop_stack, context) {
+		match fetch_template_value(loop_values_name, cf_stack, context) {
 			Value::Scalar(s) => {
 				s.chars().map(|c| Value::Scalar(c.to_string())).collect()
 			}
@@ -708,7 +842,7 @@ fn start_for<T: Read + Seek>(
 		min(loop_values.len(), limit)
 	};
 
-	loop_stack.push(LoopInfo {
+	cf_stack.push(ControlFlow::For(LoopInfo {
 		end,
 		values: loop_values,
 		variable: variable.to_string(),
@@ -721,30 +855,43 @@ fn start_for<T: Read + Seek>(
 					e
 				)
 			}),
-	})
+	}))
 }
 
 fn end_for<T: Read + Seek>(
 	input_file: &mut BufReader<T>,
-	loop_stack: &mut Vec<LoopInfo>,
+	parameters: &[String],
+	cf_stack: &mut Vec<ControlFlow>,
 ) {
-	if loop_stack.is_empty() {
+	if !parameters.is_empty() {
+		panic!(
+			"Expecting no parameters to endfor. Encountered: {:?}",
+			parameters
+		)
+	}
+
+	if cf_stack.is_empty() {
 		panic!("Encountered endfor without preceding for.");
 	}
-	let last_index = loop_stack.len() - 1;
-	let mut loop_info = &mut loop_stack[last_index];
-	loop_info.index += 1;
-	if loop_info.index < loop_info.end {
-		input_file
-			.seek(SeekFrom::Start(loop_info.buffer_start_position))
-			.unwrap_or_else(|e| {
-				panic!(
-					"Failed seeking to position {} in input stream: {}",
-					loop_info.buffer_start_position, e
-				)
-			});
-	} else {
-		loop_stack.pop();
+	let last_index = cf_stack.len() - 1;
+	let cf = &mut cf_stack[last_index];
+	match cf {
+		ControlFlow::For(loop_info) => {
+			loop_info.index += 1;
+			if loop_info.index < loop_info.end {
+				input_file
+					.seek(SeekFrom::Start(loop_info.buffer_start_position))
+					.unwrap_or_else(|e| {
+						panic!(
+							"Failed seeking to position {} in input stream: {}",
+							loop_info.buffer_start_position, e
+						)
+					});
+			} else {
+				cf_stack.pop();
+			}
+		}
+		_ => panic!("Encountered endfor without match preceeding for."),
 	}
 }
 

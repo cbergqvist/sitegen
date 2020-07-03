@@ -258,3 +258,49 @@ fn test_liquid_upcase_downcase() {
 		"title"
 	);
 }
+
+#[test]
+fn test_liquid_if() {
+	let input_file_path = PathBuf::from("./input/virtual_test.md");
+	let output_file_path = PathBuf::from("./output/virtual_test.html");
+	let front_matter = create_front_matter("Title", None);
+	let mut input_file = BufReader::new(Cursor::new(
+		(r#"{% if page.title == "Awesome Shoes" %}
+These shoes are awesome!
+{% endif %}{% if page.title == "Title" %}They're okay{% endif %}"#)
+			.as_bytes(),
+	));
+
+	let mut input_output_map = HashMap::new();
+	input_output_map.insert(
+		input_file_path.clone(),
+		markdown::OptionOutputFile {
+			front_matter: Some(front_matter.clone()),
+			path: output_file_path.clone(),
+		},
+	);
+	let groups = HashMap::new();
+
+	let mut processed_markdown_content = BufWriter::new(Vec::new());
+	liquid::process(
+		&mut input_file,
+		&mut processed_markdown_content,
+		&liquid::Context {
+			input_file_path: &input_file_path,
+			output_file_path: &output_file_path,
+			front_matter: &front_matter,
+			html_content: None,
+			root_input_dir: &PathBuf::from("./input"),
+			root_output_dir: &PathBuf::from("./output"),
+			input_output_map: &input_output_map,
+			groups: &groups,
+		},
+	);
+
+	assert_eq!(
+		String::from_utf8_lossy(
+			&processed_markdown_content.into_inner().unwrap()
+		),
+		"They're okay"
+	);
+}
