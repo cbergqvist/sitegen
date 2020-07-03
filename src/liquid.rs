@@ -516,13 +516,53 @@ fn output_template_value(
 
 		let filter_function = &identifiers[offset + 1];
 		match filter_function.borrow() {
+			"date" => {
+				if identifiers.len() < offset + 2 {
+					panic!("date filter function requires a parameter.");
+				}
+				let format_string = match fetch_template_value(
+					&identifiers[offset + 2],
+					cf_stack,
+					context,
+				) {
+					Value::Scalar(s) => s,
+					_ => panic!(
+						"Cannot handle non-scalar value as format string."
+					),
+				};
+
+				const EXAMPLE_DATETIME: &str = "2001-01-19T20:10:01Z";
+				if value.len() != EXAMPLE_DATETIME.len() {
+					panic!("date filter requires valid date format such as {}, but got: {}", EXAMPLE_DATETIME, value);
+				}
+				let mut special = false;
+				let mut result = String::new();
+				for c in format_string.chars() {
+					if c == '%' {
+						special = !special;
+					} else if special {
+						// TODO: Verify this is standard..
+						match c {
+							'Y' => result.push_str(&value[0..4]),
+							'M' => result.push_str(&value[5..7]),
+							'D' => result.push_str(&value[8..10]),
+							_ => panic!("Unhandled special character: {}", c),
+						}
+						special = false
+					} else {
+						result.push(c)
+					}
+				}
+				value = result;
+				offset += 3
+			}
 			"downcase" => {
 				value = value.to_lowercase();
-				offset += 2;
+				offset += 2
 			}
 			"upcase" => {
 				value = value.to_uppercase();
-				offset += 2;
+				offset += 2
 			}
 			_ => panic!("Unhandled filter function: {}", filter_function),
 		}

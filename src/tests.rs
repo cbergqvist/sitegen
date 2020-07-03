@@ -174,6 +174,50 @@ fn test_liquid_for() {
 }
 
 #[test]
+fn test_liquid_date() {
+	let input_file_path = PathBuf::from("./input/virtual_test.md");
+	let output_file_path = PathBuf::from("./output/virtual_test.html");
+	let front_matter =
+		create_front_matter("Title", Some("2001-01-19T20:10:01Z"));
+	let mut input_file = BufReader::new(Cursor::new(
+		(r#"{{ page.date | date "%Y.%M.%D" }}"#).as_bytes(),
+	));
+
+	let mut input_output_map = HashMap::new();
+	input_output_map.insert(
+		input_file_path.clone(),
+		markdown::OptionOutputFile {
+			front_matter: Some(front_matter.clone()),
+			path: output_file_path.clone(),
+		},
+	);
+	let groups = HashMap::new();
+
+	let mut processed_markdown_content = BufWriter::new(Vec::new());
+	liquid::process(
+		&mut input_file,
+		&mut processed_markdown_content,
+		&liquid::Context {
+			input_file_path: &input_file_path,
+			output_file_path: &output_file_path,
+			front_matter: &front_matter,
+			html_content: None,
+			root_input_dir: &PathBuf::from("./input"),
+			root_output_dir: &PathBuf::from("./output"),
+			input_output_map: &input_output_map,
+			groups: &groups,
+		},
+	);
+
+	assert_eq!(
+		String::from_utf8_lossy(
+			&processed_markdown_content.into_inner().unwrap()
+		),
+		"2001.01.19"
+	);
+}
+
+#[test]
 fn test_liquid_upcase() {
 	let input_file_path = PathBuf::from("./input/virtual_test.md");
 	let output_file_path = PathBuf::from("./output/virtual_test.html");
