@@ -77,42 +77,116 @@ pub fn process<T: Read + Seek>(
 		WaitingForCloseBracket,
 	}
 
+	enum Char {
+		OpenCurly,
+		CloseCurly,
+		Percent,
+		Newline,
+		Whitespace,
+		Other(u8),
+	}
+
 	let mut state = State::RegularContent;
-	let mut buf = [0_u8; 1];
 	let mut position = Position { line: 1, column: 1 };
 	let mut current_identifier: Vec<u8> = Vec::new();
 	let mut queued_identifiers: Vec<String> = Vec::new();
 	let mut loop_stack: Vec<LoopInfo> = Vec::new();
 
 	loop {
-		let size = input_file.read(&mut buf).unwrap_or_else(|e| {
-			panic!(
-				"Failed reading from template file {}: {}",
-				context.input_file_path.display(),
-				e
-			)
-		});
-		if size == 0 {
-			break;
-		}
+		let byte: u8 = {
+			let mut buf = [0_u8; 1];
+			let size = input_file.read(&mut buf).unwrap_or_else(|e| {
+				panic!(
+					"Failed reading from template file {}: {}",
+					context.input_file_path.display(),
+					e
+				)
+			});
+			if size == 0 {
+				break;
+			}
+			buf[0]
+		};
 
-		let byte = buf[0];
+		let c = match byte {
+			b'{' => Char::OpenCurly,
+			b'}' => Char::CloseCurly,
+			b'%' => Char::Percent,
+			b'\n' | b'\r' => Char::Newline,
+			b' ' | b'\t' => Char::Whitespace,
+			_ => Char::Other(byte),
+		};
+
 		let skipping = loop_stack
 			.last()
 			.map_or(false, |loop_info| loop_info.values.is_empty());
 
-		if byte == b'\n' {
-			match state {
-				State::RegularContent => {
-					write_to_stream(&[byte], output_buf);
-				}
-				State::LastOpenBracket => {
+		match state {
+			State::RegularContent => match c {
+				Char::OpenCurly => state = State::LastOpenBracket,
+				_ => {
 					if !skipping {
-						write_to_stream(b"{\n", output_buf)
+						write_to_stream(&[byte], output_buf)
 					}
-					state = State::RegularContent
 				}
-				State::ValueNextIdentifier | State::ValueInIdentifier => {
+			},
+			State::LastOpenBracket => match c {
+				Char::OpenCurly => state = State::ValueNextIdentifier,
+				Char::Percent => state = State::TagStart,
+				Char::CloseCurly
+				| Char::Newline
+				| Char::Whitespace
+				| Char::Other(..) => {
+					if !skipping {
+						write_to_stream(&[b'{', byte], output_buf)
+					}
+					state = State::RegularContent;
+				}
+			},
+			State::ValueNextIdentifier => match c {
+				Char::OpenCurly => panic_at_location(
+					"Unexpected open bracket while in template mode.",
+					&position,
+					context,
+				),
+				Char::CloseCurly | Char::Newline => {
+					assert!(current_identifier.is_empty());
+
+					if !skipping {
+						output_template_value(
+							&mut output_buf,
+							&queued_identifiers,
+							&loop_stack,
+							context,
+						);
+					}
+
+					current_identifier.clear();
+					queued_identifiers.clear();
+					state = match c {
+						Char::CloseCurly => State::WaitingForCloseBracket,
+						Char::Newline => State::ValueEnd,
+						_ => panic!("WTF?"),
+					}
+				}
+				Char::Whitespace => {}
+				Char::Percent | Char::Other(..) => {
+					current_identifier.push(byte);
+					state = State::ValueInIdentifier;
+				}
+			},
+			State::ValueInIdentifier => match c {
+				Char::CloseCurly => state = State::WaitingForCloseBracket,
+				Char::Whitespace => {
+					assert!(!current_identifier.is_empty());
+					queued_identifiers.push(
+						String::from_utf8_lossy(&current_identifier)
+							.to_string(),
+					);
+					current_identifier.clear();
+					state = State::ValueNextIdentifier
+				}
+				Char::Newline => {
 					if !current_identifier.is_empty()
 						|| !queued_identifiers.is_empty()
 					{
@@ -135,239 +209,175 @@ pub fn process<T: Read + Seek>(
 						state = State::ValueEnd
 					}
 				}
-				State::WaitingForCloseBracket => panic_at_location(
-					"Expected close bracket but got newline.",
-					&position,
-					context,
-				),
-				State::TagFunction => panic_at_location(
-					"Unexpected newline in the middle of function.",
-					&position,
-					context,
-				),
-				State::TagNextParameter | State::TagInParameter => {
-					if !current_identifier.is_empty()
-						|| !queued_identifiers.is_empty()
-					{
-						if !current_identifier.is_empty() {
-							queued_identifiers.push(
-								String::from_utf8_lossy(&current_identifier)
-									.to_string(),
-							);
-						}
-						let function = &queued_identifiers[0];
-						let parameters = &queued_identifiers[1..];
-
-						run_function(
-							input_file,
-							&mut output_buf,
-							function,
-							parameters,
-							&mut loop_stack,
-							context,
-						);
-
-						current_identifier.clear();
-						queued_identifiers.clear();
-
-						state = State::TagEnd
-					}
+				Char::OpenCurly | Char::Percent | Char::Other(..) => {
+					current_identifier.push(byte)
 				}
-				State::ValueEnd | State::TagStart | State::TagEnd => {}
-			}
-			position.line += 1;
-			position.column = 1;
-		} else {
-			match state {
-				State::RegularContent => match byte {
-					b'{' => state = State::LastOpenBracket,
-					_ => {
-						if !skipping {
-							write_to_stream(&[byte], output_buf)
-						}
-					}
-				},
-				State::LastOpenBracket => match byte {
-					b'{' => state = State::ValueNextIdentifier,
-					b'%' => state = State::TagStart,
-					_ => {
-						if !skipping {
-							write_to_stream(&[b'{'], output_buf)
-						}
-						state = State::RegularContent;
-					}
-				},
-				State::ValueNextIdentifier => match byte {
-					b'{' => panic_at_location(
-						"Unexpected open bracket while in template mode.",
-						&position,
-						context,
-					),
-					b'}' => {
-						if !current_identifier.is_empty() {
-							queued_identifiers.push(
-								String::from_utf8_lossy(&current_identifier)
-									.to_string(),
-							);
-						}
-
-						if !skipping {
-							output_template_value(
-								&mut output_buf,
-								&queued_identifiers,
-								&loop_stack,
-								context,
-							);
-						}
-
-						current_identifier.clear();
-						queued_identifiers.clear();
-						state = State::WaitingForCloseBracket;
-					}
-					b' ' | b'\t' => {}
-					_ => {
-						current_identifier.push(byte);
-						state = State::ValueInIdentifier;
-					}
-				},
-				State::ValueInIdentifier => match byte {
-					b'}' => state = State::WaitingForCloseBracket,
-					b' ' | b'\t' => {
-						assert!(!current_identifier.is_empty());
-						queued_identifiers.push(
-							String::from_utf8_lossy(&current_identifier)
-								.to_string(),
-						);
-						current_identifier.clear();
-						state = State::ValueNextIdentifier
-					}
-					_ => current_identifier.push(byte),
-				},
-				State::ValueEnd => match byte {
-					b'}' => state = State::WaitingForCloseBracket,
-					b' ' | b'\t' => {}
-					_ => panic_at_location(
-						"Unexpected non-whitespace character.",
-						&position,
-						context,
-					),
-				},
-				State::TagStart => match byte {
-					b'%' => panic_at_location(
-						"Unexpected % following tag start.",
-						&position,
-						context,
-					),
-					b' ' | b'\t' => {}
-					_ => {
-						current_identifier.push(byte);
-						state = State::TagFunction;
-					}
-				},
-				State::TagFunction => match byte {
-					b' ' | b'\t' => {
-						assert!(!current_identifier.is_empty());
-						queued_identifiers.push(
-							String::from_utf8_lossy(&current_identifier)
-								.to_string(),
-						);
-						current_identifier.clear();
-						state = State::TagNextParameter
-					}
-					_ => current_identifier.push(byte),
-				},
-				State::TagNextParameter => match byte {
-					b' ' | b'\t' => {}
-					b'%' => {
-						if !current_identifier.is_empty() {
-							queued_identifiers.push(
-								String::from_utf8_lossy(&current_identifier)
-									.to_string(),
-							);
-						}
-						let function = &queued_identifiers[0];
-						let parameters = &queued_identifiers[1..];
-
-						run_function(
-							input_file,
-							&mut output_buf,
-							function,
-							parameters,
-							&mut loop_stack,
-							context,
-						);
-
-						current_identifier.clear();
-						queued_identifiers.clear();
-
-						state = State::WaitingForCloseBracket
-					}
-					_ => {
-						current_identifier.push(byte);
-						state = State::TagInParameter
-					}
-				},
-				State::TagInParameter => match byte {
-					b' ' | b'\t' => {
-						assert!(!current_identifier.is_empty());
-						queued_identifiers.push(
-							String::from_utf8_lossy(&current_identifier)
-								.to_string(),
-						);
-						current_identifier.clear();
-						state = State::TagNextParameter;
-					}
-					b'%' => {
-						if !current_identifier.is_empty() {
-							queued_identifiers.push(
-								String::from_utf8_lossy(&current_identifier)
-									.to_string(),
-							);
-						}
-						let function = &queued_identifiers[0];
-						let parameters = &queued_identifiers[1..];
-
-						run_function(
-							input_file,
-							&mut output_buf,
-							function,
-							parameters,
-							&mut loop_stack,
-							context,
-						);
-
-						current_identifier.clear();
-						queued_identifiers.clear();
-
-						state = State::WaitingForCloseBracket
-					}
-					_ => current_identifier.push(byte),
-				},
-				State::TagEnd => match byte {
-					b'%' => state = State::WaitingForCloseBracket,
-					b' ' | b'\t' => {}
-					_ => panic_at_location(
-						&format!(
-							"Unexpected non-whitespace character: \"{}\".",
+			},
+			State::ValueEnd => match c {
+				Char::CloseCurly => state = State::WaitingForCloseBracket,
+				Char::Whitespace | Char::Newline => {}
+				Char::OpenCurly | Char::Percent | Char::Other(..) => {
+					panic_at_location(
+						&format!("Unexpected non-whitespace character \"{}\" when looking for value end curly braces.",
 							byte as char
 						),
 						&position,
 						context,
+					)
+				}
+			},
+			State::TagStart => match c {
+				Char::Percent | Char::OpenCurly | Char::CloseCurly => panic_at_location(
+					&format!(
+						"Unexpected character \"{}\" following tag start.",
+						byte as char
 					),
-				},
-				State::WaitingForCloseBracket => {
-					if byte == b'}' {
-						state = State::RegularContent
-					} else {
-						panic_at_location(
-							"Missing double close-bracket.",
-							&position,
-							context,
-						)
+					&position,
+					context,
+				),
+				Char::Whitespace | Char::Newline => {}
+				Char::Other(..) => {
+					current_identifier.push(byte);
+					state = State::TagFunction;
+				}
+			},
+			State::TagFunction => match c {
+				Char::Percent | Char::OpenCurly | Char::CloseCurly => panic_at_location(
+					&format!(
+						"Unexpected character \"{}\" in function name.",
+						byte as char
+					),
+					&position,
+					context,
+				),
+				Char::Newline => panic_at_location(
+					"Unexpected newline in the middle of function name.",
+					&position,
+					context,
+				),
+				Char::Whitespace => {
+					assert!(!current_identifier.is_empty());
+					queued_identifiers.push(
+						String::from_utf8_lossy(&current_identifier)
+							.to_string(),
+					);
+					current_identifier.clear();
+					state = State::TagNextParameter
+				}
+				Char::Other(..) => current_identifier.push(byte),
+			},
+			State::TagNextParameter => match c {
+				Char::Whitespace => {}
+				Char::OpenCurly | Char::CloseCurly => panic_at_location(
+					&format!(
+						"Unexpected character \"{}\" when looking for next parameter.",
+						byte as char
+					),
+					&position,
+					context,
+				),
+				Char::Percent | Char::Newline => {
+					assert!(current_identifier.is_empty());
+					let function = &queued_identifiers[0];
+					let parameters = &queued_identifiers[1..];
+
+					run_function(
+						input_file,
+						&mut output_buf,
+						function,
+						parameters,
+						&mut loop_stack,
+						skipping,
+						context,
+					);
+
+					current_identifier.clear();
+					queued_identifiers.clear();
+
+					state = match c {
+						Char::Percent => State::WaitingForCloseBracket,
+						Char::Newline => State::TagEnd,
+						_ => panic!("WTF?"),
 					}
 				}
+				Char::Other(..) => {
+					current_identifier.push(byte);
+					state = State::TagInParameter
+				}
+			},
+			State::TagInParameter => match c {
+				Char::Whitespace => {
+					assert!(!current_identifier.is_empty());
+					queued_identifiers.push(
+						String::from_utf8_lossy(&current_identifier)
+							.to_string(),
+					);
+					current_identifier.clear();
+					state = State::TagNextParameter;
+				}
+				Char::Newline => {
+					if !current_identifier.is_empty() {
+						queued_identifiers.push(
+							String::from_utf8_lossy(&current_identifier)
+								.to_string(),
+						);
+					}
+					let function = &queued_identifiers[0];
+					let parameters = &queued_identifiers[1..];
+
+					run_function(
+						input_file,
+						&mut output_buf,
+						function,
+						parameters,
+						&mut loop_stack,
+						skipping,
+						context,
+					);
+
+					current_identifier.clear();
+					queued_identifiers.clear();
+
+					state = State::WaitingForCloseBracket
+				}
+				Char::OpenCurly
+				| Char::CloseCurly
+				| Char::Percent
+				| Char::Other(..) => current_identifier.push(byte),
+			},
+			State::TagEnd => match c {
+				Char::Percent => state = State::WaitingForCloseBracket,
+				Char::Whitespace | Char::Newline => {}
+				Char::OpenCurly | Char::CloseCurly | Char::Other(..) => {
+					panic_at_location(
+						&format!(
+							"Unexpected character \"{}\" when looking for tag end.",
+							byte as char
+						),
+						&position,
+						context,
+					)
+				}
+			},
+			State::WaitingForCloseBracket => match c {
+				Char::CloseCurly => state = State::RegularContent,
+				Char::OpenCurly
+				| Char::Percent
+				| Char::Newline
+				| Char::Whitespace
+				| Char::Other(..) => panic_at_location(
+					"Missing close-bracket.",
+					&position,
+					context,
+				),
+			},
+		}
+		match c {
+			Char::Newline => {
+				position.line += 1;
+				position.column = 1;
 			}
-			position.column += 1
+			_ => position.column += 1,
 		}
 	}
 
@@ -593,15 +603,12 @@ fn run_function<T: Read + Seek>(
 	function: &str,
 	parameters: &[String],
 	loop_stack: &mut Vec<LoopInfo>,
+	skipping: bool,
 	context: &Context,
 ) {
 	if function.is_empty() {
 		panic!("Empty function name.")
 	}
-
-	let skipping = loop_stack
-		.last()
-		.map_or(false, |loop_info| loop_info.values.is_empty());
 
 	match function {
 		"for" => {
