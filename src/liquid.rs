@@ -544,8 +544,48 @@ fn output_template_value(
 						// TODO: Verify this is standard..
 						match c {
 							'Y' => result.push_str(&value[0..4]),
-							'M' => result.push_str(&value[5..7]),
-							'D' => result.push_str(&value[8..10]),
+							'y' => result.push_str(&value[2..4]),
+							'm' => result.push_str(&value[5..7]),
+							'b' | 'h' => {
+								let num_month = &value[5..7];
+								result.push_str(match num_month {
+									"01" => "Jan",
+									"02" => "Feb",
+									"03" => "Mar",
+									"04" => "Apr",
+									"05" => "May",
+									"06" => "Jun",
+									"07" => "Jul",
+									"08" => "Aug",
+									"09" => "Sep",
+									"10" => "Oct",
+									"11" => "Nov",
+									"12" => "Dec",
+									_ => panic!("Failed converting {} into month string, expected number between 01-12", num_month)
+								});
+							}
+							'B' => {
+								let num_month = &value[5..7];
+								result.push_str(match num_month {
+									"01" => "January",
+									"02" => "February",
+									"03" => "March",
+									"04" => "April",
+									"05" => "May",
+									"06" => "June",
+									"07" => "July",
+									"08" => "August",
+									"09" => "September",
+									"10" => "October",
+									"11" => "November",
+									"12" => "December",
+									_ => panic!("Failed converting {} into month string, expected number between 01-12", num_month)
+								});
+							}
+							'd' => result.push_str(&value[8..10]),
+							'H' => result.push_str(&value[11..13]),
+							'M' => result.push_str(&value[14..16]),
+							'S' => result.push_str(&value[17..19]),
 							_ => panic!("Unhandled special character: {}", c),
 						}
 						special = false
@@ -575,9 +615,12 @@ fn fetch_template_value(
 	cf_stack: &[ControlFlow],
 	context: &Context,
 ) -> Value {
+	assert!(!name.is_empty(), "Never expected to get empty identifiers.");
+
 	if name.len() > 1 && name.starts_with('"') && name.ends_with('"') {
 		return Value::Scalar(name[1..name.len() - 1].to_string());
 	}
+
 	let name_parts: Vec<&str> = name.split('.').collect();
 	match name_parts.len() {
 		1 => fetch_value(name, cf_stack, context),

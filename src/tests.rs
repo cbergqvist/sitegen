@@ -178,9 +178,10 @@ fn test_liquid_date() {
 	let input_file_path = PathBuf::from("./input/virtual_test.md");
 	let output_file_path = PathBuf::from("./output/virtual_test.html");
 	let front_matter =
-		create_front_matter("Title", Some("2001-01-19T20:10:01Z"));
+		create_front_matter("Title", Some("2001-12-31T24:43:51Z"));
 	let mut input_file = BufReader::new(Cursor::new(
-		(r#"{{ page.date | date "%Y.%M.%D" }}"#).as_bytes(),
+		(r#"{{ page.date | date "%Y-%m-%dT%H:%M:%SZ %y %b %h %B" }}"#)
+			.as_bytes(),
 	));
 
 	let mut input_output_map = HashMap::new();
@@ -213,7 +214,7 @@ fn test_liquid_date() {
 		String::from_utf8_lossy(
 			&processed_markdown_content.into_inner().unwrap()
 		),
-		"2001.01.19"
+		"2001-12-31T24:43:51Z 01 Dec Dec December"
 	);
 }
 
