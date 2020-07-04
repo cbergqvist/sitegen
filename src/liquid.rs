@@ -1,6 +1,7 @@
 use core::cmp::min;
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
@@ -39,7 +40,8 @@ struct Dictionary {
 
 #[derive(Clone, Debug, PartialEq)]
 enum Value {
-	Scalar(String),
+	String(String),
+	Integer(i32),
 	List(List),
 	Dictionary(Dictionary),
 }
@@ -494,7 +496,8 @@ fn output_template_value(
 	}
 	let name = &identifiers[0];
 	let mut value = match fetch_template_value(name, cf_stack, context) {
-		Value::Scalar(s) => s,
+		Value::String(s) => s,
+		Value::Integer(i) => i.to_string(),
 		Value::List(..) => panic!(
 			"Cannot output list value {} directly, maybe use a for-loop?",
 			name
@@ -525,9 +528,9 @@ fn output_template_value(
 					cf_stack,
 					context,
 				) {
-					Value::Scalar(s) => s,
+					Value::String(s) => s,
 					_ => panic!(
-						"Cannot handle non-scalar value as format string."
+						"Cannot handle non-string value as format string."
 					),
 				};
 
@@ -618,7 +621,20 @@ fn fetch_template_value(
 	assert!(!name.is_empty(), "Never expected to get empty identifiers.");
 
 	if name.len() > 1 && name.starts_with('"') && name.ends_with('"') {
-		return Value::Scalar(name[1..name.len() - 1].to_string());
+		return Value::String(name[1..name.len() - 1].to_string());
+	}
+
+	{
+		let numeric_offset = if name.chars().next() == Some('-') {
+			1
+		} else {
+			0
+		};
+		if name[numeric_offset..].chars().all(|c| c.is_digit(10)) {
+			return Value::Integer(name.parse::<i32>().unwrap_or_else(|e| {
+				panic!("Failed converting {} to an i32: {}", name, e)
+			}));
+		}
 	}
 
 	let name_parts: Vec<&str> = name.split('.').collect();
@@ -646,27 +662,27 @@ fn fetch_field(
 		match field {
 			"content" => {
 				if let Some(content) = context.html_content {
-					Value::Scalar(String::from(content))
+					Value::String(String::from(content))
 				} else {
 					panic!("Requested content but none exists")
 				}
 			}
-			"date" => Value::Scalar(
+			"date" => Value::String(
 				context
 					.front_matter
 					.date
 					.as_ref()
 					.map_or_else(String::new, String::clone),
 			),
-			"title" => Value::Scalar(context.front_matter.title.clone()),
+			"title" => Value::String(context.front_matter.title.clone()),
 			"published" => {
-				Value::Scalar(String::from(if context.front_matter.published {
+				Value::String(String::from(if context.front_matter.published {
 					"true"
 				} else {
 					"false"
 				}))
 			}
-			"edited" => Value::Scalar(
+			"edited" => Value::String(
 				context
 					.front_matter
 					.edited
@@ -680,7 +696,7 @@ fn fetch_field(
 				if let Some(value) =
 					context.front_matter.custom_attributes.get(field)
 				{
-					Value::Scalar(value.to_string())
+					Value::String(value.to_string())
 				} else {
 					panic!("Not yet supported field: {}.{}", object, field)
 				}
@@ -718,7 +734,19 @@ fn fetch_field(
 
 		if let Some(entries) = context.groups.get(object) {
 			match field {
-				"count" => return Value::Scalar(entries.len().to_string()),
+				"count" => {
+					return Value::Integer(
+						entries.len().try_into().unwrap_or_else(|e| {
+							panic!(
+								"Failed converting {}.{} with value {} to i32: {}",
+								object,
+								field,
+								entries.len(),
+								e
+							)
+						}),
+					)
+				}
 				_ => panic!("Unhandled field {} on object {}.", field, object),
 			}
 		}
@@ -738,11 +766,11 @@ fn fetch_value(
 			let mut map = HashMap::new();
 			map.insert(
 				"title",
-				Value::Scalar(entry.front_matter.title.clone()),
+				Value::String(entry.front_matter.title.clone()),
 			);
 			map.insert(
 				"date",
-				Value::Scalar(
+				Value::String(
 					entry
 						.front_matter
 						.date
@@ -752,7 +780,7 @@ fn fetch_value(
 			);
 			map.insert(
 				"link",
-				Value::Scalar(make_relative_link(
+				Value::String(make_relative_link(
 					context.output_file_path,
 					&entry.path,
 					context.root_output_dir,
@@ -848,9 +876,47 @@ fn start_if(
 	let rhs = fetch_template_value(&parameters[2], cf_stack, context);
 
 	match parameters[1].borrow() {
-		"==" => {
-			let equal = lhs == rhs;
-			cf_stack.push(ControlFlow::If(equal))
+		"==" => cf_stack.push(ControlFlow::If(lhs == rhs)),
+		"!=" => cf_stack.push(ControlFlow::If(lhs != rhs)),
+		"<" => {
+			if let (Value::Integer(l), Value::Integer(r)) = (&lhs, &rhs) {
+				cf_stack.push(ControlFlow::If(l < r))
+			} else {
+				panic!(
+					"Expecting to compare integer types but got {:?} and {:?}",
+					lhs, rhs
+				)
+			}
+		}
+		">" => {
+			if let (Value::Integer(l), Value::Integer(r)) = (&lhs, &rhs) {
+				cf_stack.push(ControlFlow::If(l > r))
+			} else {
+				panic!(
+					"Expecting to compare integer types but got {:?} and {:?}",
+					lhs, rhs
+				)
+			}
+		}
+		"<=" => {
+			if let (Value::Integer(l), Value::Integer(r)) = (&lhs, &rhs) {
+				cf_stack.push(ControlFlow::If(l <= r))
+			} else {
+				panic!(
+					"Expecting to compare integer types but got {:?} and {:?}",
+					lhs, rhs
+				)
+			}
+		}
+		">=" => {
+			if let (Value::Integer(l), Value::Integer(r)) = (&lhs, &rhs) {
+				cf_stack.push(ControlFlow::If(l >= r))
+			} else {
+				panic!(
+					"Expecting to compare integer types but got {:?} and {:?}",
+					lhs, rhs
+				)
+			}
 		}
 		_ => panic!("Unsupported operator: {:?}", parameters[1]),
 	}
@@ -899,8 +965,11 @@ fn start_for<T: Read + Seek>(
 		Vec::new()
 	} else {
 		match fetch_template_value(loop_values_name, cf_stack, context) {
-			Value::Scalar(s) => {
-				s.chars().map(|c| Value::Scalar(c.to_string())).collect()
+			Value::String(s) => {
+				s.chars().map(|c| Value::String(c.to_string())).collect()
+			}
+			Value::Integer(..) => {
+				panic!("Cannot iterate over one single integer value.")
 			}
 			Value::List(l) => l.values,
 			Value::Dictionary(dict) => dict.map.values().cloned().collect(),
