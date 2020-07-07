@@ -53,15 +53,20 @@ enum ControlFlow {
 		index: usize,
 		end: usize,
 		buffer_start_position: u64,
+		local_variables: HashMap<String, Value>,
 	},
 	If {
 		condition: bool,
+		local_variables: HashMap<String, Value>,
 	},
 }
 
 impl ControlFlow {
 	fn if_new(condition: bool) -> ControlFlow {
-		ControlFlow::If { condition }
+		ControlFlow::If {
+			condition,
+			local_variables: HashMap::new(),
+		}
 	}
 }
 
@@ -106,6 +111,7 @@ pub fn process<T: Read + Seek>(
 	let mut parsing_literal = false;
 	let mut queued_identifiers: Vec<String> = Vec::new();
 	let mut cf_stack: Vec<ControlFlow> = Vec::new();
+	let mut outer_variables: HashMap<String, Value> = HashMap::new();
 
 	loop {
 		let byte: u8 = {
@@ -174,6 +180,7 @@ pub fn process<T: Read + Seek>(
 						output_template_value(
 							&mut output_buf,
 							&queued_identifiers,
+							&outer_variables,
 							&cf_stack,
 							context,
 						);
@@ -241,6 +248,7 @@ pub fn process<T: Read + Seek>(
 								output_template_value(
 									&mut output_buf,
 									&queued_identifiers,
+									&outer_variables,
 									&cf_stack,
 									context,
 								)
@@ -342,6 +350,7 @@ pub fn process<T: Read + Seek>(
 						&mut output_buf,
 						function,
 						parameters,
+						&mut outer_variables,
 						&mut cf_stack,
 						skipping,
 						context,
@@ -409,6 +418,7 @@ pub fn process<T: Read + Seek>(
 							&mut output_buf,
 							function,
 							parameters,
+							&mut outer_variables,
 							&mut cf_stack,
 							skipping,
 							context,
@@ -494,6 +504,7 @@ fn panic_at_location(
 fn output_template_value(
 	mut output_buf: &mut BufWriter<Vec<u8>>,
 	identifiers: &[String],
+	outer_variables: &HashMap<String, Value>,
 	cf_stack: &[ControlFlow],
 	context: &Context,
 ) {
@@ -501,17 +512,18 @@ fn output_template_value(
 		panic!("Encountered empty template value section, missing name.")
 	}
 	let name = &identifiers[0];
-	let mut value = match fetch_template_value(name, cf_stack, context) {
-		Value::String(s) => s,
-		Value::Integer(i) => i.to_string(),
-		Value::List(..) => panic!(
-			"Cannot output list value {} directly, maybe use a for-loop?",
-			name
-		),
-		Value::Dictionary(..) => {
-			panic!("Cannot output dictionary value {} directly.", name)
-		}
-	};
+	let mut value =
+		match fetch_template_value(name, outer_variables, cf_stack, context) {
+			Value::String(s) => s,
+			Value::Integer(i) => i.to_string(),
+			Value::List(..) => panic!(
+				"Cannot output list value {} directly, maybe use a for-loop?",
+				name
+			),
+			Value::Dictionary(..) => {
+				panic!("Cannot output dictionary value {} directly.", name)
+			}
+		};
 
 	let mut offset = 1;
 	while identifiers.len() > offset {
@@ -531,6 +543,7 @@ fn output_template_value(
 				}
 				let format_string = match fetch_template_value(
 					&identifiers[offset + 2],
+					outer_variables,
 					cf_stack,
 					context,
 				) {
@@ -621,6 +634,7 @@ fn output_template_value(
 
 fn fetch_template_value(
 	name: &str,
+	outer_variables: &HashMap<String, Value>,
 	cf_stack: &[ControlFlow],
 	context: &Context,
 ) -> Value {
@@ -645,7 +659,7 @@ fn fetch_template_value(
 
 	let name_parts: Vec<&str> = name.split('.').collect();
 	match name_parts.len() {
-		1 => fetch_value(name, cf_stack, context),
+		1 => fetch_value(name, outer_variables, cf_stack, context),
 		2 => fetch_field(name_parts[0], name_parts[1], cf_stack, context),
 		_ => panic!("Unexpected identifier: {}", name),
 	}
@@ -712,13 +726,12 @@ fn fetch_field(
 		for cf in cf_stack.iter().rev() {
 			match cf {
 				ControlFlow::For {
-					variable,
-					values,
-					index,
-					..
+					local_variables, ..
+				}
+				| ControlFlow::If {
+					local_variables, ..
 				} => {
-					if variable == object {
-						let value = &values[*index];
+					if let Some(value) = local_variables.get(object) {
 						match value {
 							Value::Dictionary(dict) => {
 								return dict
@@ -739,7 +752,6 @@ fn fetch_field(
 						}
 					}
 				}
-				ControlFlow::If { .. } => {}
 			}
 		}
 
@@ -768,6 +780,7 @@ fn fetch_field(
 
 fn fetch_value(
 	name: &str,
+	outer_variables: &HashMap<String, Value>,
 	cf_stack: &[ControlFlow],
 	context: &Context,
 ) -> Value {
@@ -806,17 +819,20 @@ fn fetch_value(
 	for cf in cf_stack.iter().rev() {
 		match cf {
 			ControlFlow::For {
-				variable,
-				values,
-				index,
-				..
+				local_variables, ..
+			}
+			| ControlFlow::If {
+				local_variables, ..
 			} => {
-				if variable == name {
-					return values[*index].clone();
+				if let Some(value) = local_variables.get(name) {
+					return value.clone();
 				}
 			}
-			ControlFlow::If { .. } => {}
 		}
+	}
+
+	if let Some(value) = outer_variables.get(name) {
+		return value.clone();
 	}
 
 	panic!("Failed finding value for \"{}\"", name);
@@ -827,6 +843,7 @@ fn run_function<T: Read + Seek>(
 	mut output_buf: &mut BufWriter<Vec<u8>>,
 	function: &str,
 	parameters: &[String],
+	outer_variables: &mut HashMap<String, Value>,
 	cf_stack: &mut Vec<ControlFlow>,
 	skipping: bool,
 	context: &Context,
@@ -836,9 +853,21 @@ fn run_function<T: Read + Seek>(
 	}
 
 	match function {
-		"if" => start_if(parameters, cf_stack, skipping, context),
+		"assign" => {
+			assign(parameters, outer_variables, cf_stack, skipping, context)
+		}
+		"if" => {
+			start_if(parameters, outer_variables, cf_stack, skipping, context)
+		}
 		"endif" => end_if(parameters, cf_stack),
-		"for" => start_for(input_file, parameters, cf_stack, skipping, context),
+		"for" => start_for(
+			input_file,
+			parameters,
+			outer_variables,
+			cf_stack,
+			skipping,
+			context,
+		),
 		"endfor" => end_for(input_file, parameters, cf_stack),
 		"include" => {
 			if parameters.len() != 1 {
@@ -869,8 +898,77 @@ fn run_function<T: Read + Seek>(
 	}
 }
 
+fn assign(
+	parameters: &[String],
+	outer_variables: &mut HashMap<String, Value>,
+	cf_stack: &mut Vec<ControlFlow>,
+	skipping: bool,
+	context: &Context,
+) {
+	if skipping {
+		return;
+	}
+	if parameters.len() != 3 {
+		panic!("assign-statement doesn't have the correct parameter count, expecting \"assign .. = ..\", got: {:?}", parameters)
+	}
+	if parameters[1] != "=" {
+		panic!(
+			"Missing assignment-operator (=) in assign-statement, got: {}",
+			parameters[1]
+		)
+	}
+
+	let name_param = &parameters[0];
+	let value_param = fetch_template_value(
+		&parameters[2],
+		outer_variables,
+		cf_stack,
+		context,
+	);
+	if !cf_stack.is_empty() {
+		for cf in cf_stack.iter_mut().rev() {
+			match cf {
+				ControlFlow::For {
+					local_variables, ..
+				}
+				| ControlFlow::If {
+					local_variables, ..
+				} => {
+					if let Some(value) = local_variables.get_mut(name_param) {
+						*value = value_param;
+
+						return;
+					}
+				}
+			};
+		}
+
+		if let Some(value) = outer_variables.get_mut(name_param) {
+			*value = value_param;
+
+			return;
+		}
+
+		match cf_stack.last_mut().unwrap_or_else(|| {
+			panic!("How could cf_stack not be empty but still not have a last element?")
+		}) {
+			ControlFlow::For {
+				local_variables, ..
+			}
+			| ControlFlow::If {
+				local_variables, ..
+			} => local_variables.insert(name_param.clone(), value_param),
+		};
+
+		return;
+	}
+
+	outer_variables.insert(name_param.clone(), value_param);
+}
+
 fn start_if(
 	parameters: &[String],
+	outer_variables: &mut HashMap<String, Value>,
 	cf_stack: &mut Vec<ControlFlow>,
 	skipping: bool,
 	context: &Context,
@@ -888,8 +986,18 @@ fn start_if(
 		panic!("Unsupported conditional expression: {:?}", parameters)
 	}
 
-	let lhs = fetch_template_value(&parameters[0], cf_stack, context);
-	let rhs = fetch_template_value(&parameters[2], cf_stack, context);
+	let lhs = fetch_template_value(
+		&parameters[0],
+		outer_variables,
+		cf_stack,
+		context,
+	);
+	let rhs = fetch_template_value(
+		&parameters[2],
+		outer_variables,
+		cf_stack,
+		context,
+	);
 
 	match parameters[1].borrow() {
 		"==" => cf_stack.push(ControlFlow::if_new(lhs == rhs)),
@@ -962,6 +1070,7 @@ fn end_if(parameters: &[String], cf_stack: &mut Vec<ControlFlow>) {
 fn start_for<T: Read + Seek>(
 	input_file: &mut BufReader<T>,
 	parameters: &[String],
+	outer_variables: &mut HashMap<String, Value>,
 	cf_stack: &mut Vec<ControlFlow>,
 	skipping: bool,
 	context: &Context,
@@ -980,7 +1089,12 @@ fn start_for<T: Read + Seek>(
 	let loop_values: Vec<Value> = if skipping {
 		Vec::new()
 	} else {
-		match fetch_template_value(loop_values_name, cf_stack, context) {
+		match fetch_template_value(
+			loop_values_name,
+			outer_variables,
+			cf_stack,
+			context,
+		) {
 			Value::String(s) => {
 				s.chars().map(|c| Value::String(c.to_string())).collect()
 			}
@@ -1017,10 +1131,16 @@ fn start_for<T: Read + Seek>(
 		min(loop_values.len(), limit)
 	};
 
+	let mut local_variables = HashMap::new();
+	if end > 0 {
+		local_variables.insert(variable.clone(), loop_values[0].clone());
+	}
+
 	cf_stack.push(ControlFlow::For {
 		end,
+		local_variables,
 		values: loop_values,
-		variable: variable.to_string(),
+		variable: variable.clone(),
 		index: 0,
 		buffer_start_position: input_file
 			.seek(SeekFrom::Current(0))
@@ -1052,13 +1172,19 @@ fn end_for<T: Read + Seek>(
 	let cf = &mut cf_stack[last_index];
 	match cf {
 		ControlFlow::For {
+			variable,
+			values,
 			index,
 			end,
 			buffer_start_position,
+			local_variables,
 			..
 		} => {
 			*index += 1;
 			if index < end {
+				local_variables
+					.insert(variable.clone(), values[*index].clone());
+
 				input_file
 					.seek(SeekFrom::Start(*buffer_start_position))
 					.unwrap_or_else(|e| {
