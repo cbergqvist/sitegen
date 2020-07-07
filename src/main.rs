@@ -212,6 +212,15 @@ fn build_initial_input_output_map(
 		)
 	}
 
+	for entries in groups.values_mut() {
+		// Use stable sort in attempt to stay relatively deterministic, even
+		// though we are still relying on the file system to give us files with
+		// exactly equal front matter dates in the same order.
+		entries.sort_by(|lhs, rhs| {
+			return rhs.front_matter.date.cmp(&lhs.front_matter.date);
+		})
+	}
+
 	for group in groups.keys() {
 		let xml_file = PathBuf::from("feeds")
 			.join(PathBuf::from(group).with_extension("xml"));
