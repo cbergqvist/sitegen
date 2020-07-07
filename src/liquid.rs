@@ -46,6 +46,7 @@ enum Value {
 	Dictionary(Dictionary),
 }
 
+#[derive(Debug)]
 enum ControlFlow {
 	For {
 		values: Vec<Value>,
@@ -58,6 +59,10 @@ enum ControlFlow {
 	If {
 		condition: bool,
 		local_variables: HashMap<String, Value>,
+	},
+	Capture {
+		variable: String,
+		content: Vec<u8>,
 	},
 }
 
@@ -77,7 +82,7 @@ impl ControlFlow {
 #[allow(clippy::too_many_lines)]
 pub fn process<T: Read + Seek>(
 	input_file: &mut BufReader<T>,
-	mut output_buf: &mut BufWriter<Vec<u8>>,
+	mut parent_output_buf: &mut BufWriter<Vec<u8>>,
 	context: &Context,
 ) {
 	#[derive(Debug)]
@@ -112,6 +117,7 @@ pub fn process<T: Read + Seek>(
 	let mut queued_identifiers: Vec<String> = Vec::new();
 	let mut cf_stack: Vec<ControlFlow> = Vec::new();
 	let mut outer_variables: HashMap<String, Value> = HashMap::new();
+	let mut capture_buf = BufWriter::new(Vec::new());
 
 	loop {
 		let byte: u8 = {
@@ -139,10 +145,37 @@ pub fn process<T: Read + Seek>(
 			_ => Char::Other(byte),
 		};
 
-		let skipping = cf_stack.last().map_or(false, |cf| match cf {
-			ControlFlow::For { values, .. } => values.is_empty(),
-			ControlFlow::If { condition, .. } => !*condition,
-		});
+		let (skipping, capture_index) = {
+			let mut s = None;
+			let mut ci = usize::max_value();
+			for (index, cf) in cf_stack.iter().rev().enumerate() {
+				match cf {
+					ControlFlow::For { values, .. } => {
+						if s.is_none() {
+							s = Some(values.is_empty())
+						}
+					}
+					ControlFlow::If { condition, .. } => {
+						if s.is_none() {
+							s = Some(!*condition)
+						}
+					}
+					ControlFlow::Capture { .. } => {
+						ci = cf_stack.len() - index - 1
+					}
+				}
+			}
+			(s.unwrap_or(false), ci)
+		};
+
+		let mut output_buf = if capture_index == usize::max_value() {
+			// TODO: Optimize
+			// Reset capture_buf when we no longer use it.
+			capture_buf = BufWriter::new(Vec::new());
+			&mut parent_output_buf
+		} else {
+			&mut capture_buf
+		};
 
 		match state {
 			State::RegularContent => match c {
@@ -468,6 +501,33 @@ pub fn process<T: Read + Seek>(
 				),
 			},
 		}
+
+		// Down here we are free to mutate cf_stack again without running into
+		// shared reference errors.
+		if capture_index < cf_stack.len() {
+			match &mut cf_stack[capture_index] {
+				ControlFlow::Capture { content, .. } => {
+					if capture_buf.buffer().len() > 0
+						|| capture_buf.get_ref().len() > 0
+					{
+						content.append(
+							&mut capture_buf.into_inner().unwrap_or_else(|e| {
+								panic!(
+									"Failed unwrapping capture BufWriter: {}",
+									e
+								)
+							}),
+						);
+						capture_buf = BufWriter::new(Vec::new())
+					}
+				}
+				_ => panic!(
+					"Expected capture at stack index {} but got {:?}.",
+					capture_index, cf_stack[capture_index]
+				),
+			}
+		}
+
 		match c {
 			Char::Newline => {
 				position.line += 1;
@@ -660,7 +720,13 @@ fn fetch_template_value(
 	let name_parts: Vec<&str> = name.split('.').collect();
 	match name_parts.len() {
 		1 => fetch_value(name, outer_variables, cf_stack, context),
-		2 => fetch_field(name_parts[0], name_parts[1], cf_stack, context),
+		2 => fetch_field(
+			name_parts[0],
+			name_parts[1],
+			outer_variables,
+			cf_stack,
+			context,
+		),
 		_ => panic!("Unexpected identifier: {}", name),
 	}
 }
@@ -668,6 +734,7 @@ fn fetch_template_value(
 fn fetch_field(
 	object: &str,
 	field: &str,
+	outer_variables: &HashMap<String, Value>,
 	cf_stack: &[ControlFlow],
 	context: &Context,
 ) -> Value {
@@ -723,6 +790,7 @@ fn fetch_field(
 			}
 		}
 	} else {
+		let mut value = None;
 		for cf in cf_stack.iter().rev() {
 			match cf {
 				ControlFlow::For {
@@ -731,27 +799,34 @@ fn fetch_field(
 				| ControlFlow::If {
 					local_variables, ..
 				} => {
-					if let Some(value) = local_variables.get(object) {
-						match value {
-							Value::Dictionary(dict) => {
-								return dict
-									.map
-									.get(field)
-									.unwrap_or_else(|| {
-										panic!(
-											"Unhandled field \"{}.{}\"",
-											object, field
-										)
-									})
-									.clone();
-							}
-							_ => panic!(
-								"Unexpected type of value in \"{}(.{})\": {:?}",
-								object, field, value
-							),
-						}
+					value = local_variables.get(object);
+					if value.is_some() {
+						break;
 					}
 				}
+				ControlFlow::Capture { .. } => {}
+			}
+		}
+
+		if value.is_none() {
+			value = outer_variables.get(object)
+		}
+
+		if let Some(value) = value {
+			match value {
+				Value::Dictionary(dict) => {
+					return dict
+						.map
+						.get(field)
+						.unwrap_or_else(|| {
+							panic!("Unhandled field \"{}.{}\"", object, field)
+						})
+						.clone();
+				}
+				_ => panic!(
+					"Unexpected type of value in \"{}(.{})\": {:?}",
+					object, field, value
+				),
 			}
 		}
 
@@ -828,6 +903,7 @@ fn fetch_value(
 					return value.clone();
 				}
 			}
+			ControlFlow::Capture { .. } => {}
 		}
 	}
 
@@ -855,6 +931,10 @@ fn run_function<T: Read + Seek>(
 	match function {
 		"assign" => {
 			assign(parameters, outer_variables, cf_stack, skipping, context)
+		}
+		"capture" => start_capture(parameters, cf_stack, skipping),
+		"endcapture" => {
+			end_capture(parameters, outer_variables, cf_stack, skipping)
 		}
 		"if" => {
 			start_if(parameters, outer_variables, cf_stack, skipping, context)
@@ -918,13 +998,23 @@ fn assign(
 		)
 	}
 
-	let name_param = &parameters[0];
-	let value_param = fetch_template_value(
+	let name = &parameters[0];
+	let value = fetch_template_value(
 		&parameters[2],
 		outer_variables,
 		cf_stack,
 		context,
 	);
+
+	assign_inner(name, value, outer_variables, cf_stack)
+}
+
+fn assign_inner(
+	name: &str,
+	value: Value,
+	outer_variables: &mut HashMap<String, Value>,
+	cf_stack: &mut Vec<ControlFlow>,
+) {
 	if !cf_stack.is_empty() {
 		for cf in cf_stack.iter_mut().rev() {
 			match cf {
@@ -934,36 +1024,91 @@ fn assign(
 				| ControlFlow::If {
 					local_variables, ..
 				} => {
-					if let Some(value) = local_variables.get_mut(name_param) {
-						*value = value_param;
+					if let Some(v) = local_variables.get_mut(name) {
+						*v = value;
 
 						return;
 					}
 				}
+				ControlFlow::Capture { .. } => {}
 			};
 		}
 
-		if let Some(value) = outer_variables.get_mut(name_param) {
-			*value = value_param;
+		if let Some(v) = outer_variables.get_mut(name) {
+			*v = value;
 
 			return;
 		}
 
-		match cf_stack.last_mut().unwrap_or_else(|| {
-			panic!("How could cf_stack not be empty but still not have a last element?")
-		}) {
-			ControlFlow::For {
-				local_variables, ..
-			}
-			| ControlFlow::If {
-				local_variables, ..
-			} => local_variables.insert(name_param.clone(), value_param),
-		};
+		for cf in cf_stack.iter_mut().rev() {
+			match cf {
+				ControlFlow::For {
+					local_variables, ..
+				}
+				| ControlFlow::If {
+					local_variables, ..
+				} => {
+					local_variables.insert(name.to_string(), value);
 
-		return;
+					return;
+				}
+				ControlFlow::Capture { .. } => {}
+			}
+		}
 	}
 
-	outer_variables.insert(name_param.clone(), value_param);
+	outer_variables.insert(name.to_string(), value);
+}
+
+fn start_capture(
+	parameters: &[String],
+	cf_stack: &mut Vec<ControlFlow>,
+	skipping: bool,
+) {
+	if skipping {
+		return;
+	}
+	if parameters.len() != 1 {
+		panic!("capture-statement doesn't have the correct parameter count, expecting \"capture ..\", got: {:?}", parameters)
+	}
+
+	cf_stack.push(ControlFlow::Capture {
+		variable: parameters[0].clone(),
+		content: Vec::new(),
+	})
+}
+
+fn end_capture(
+	parameters: &[String],
+	outer_variables: &mut HashMap<String, Value>,
+	cf_stack: &mut Vec<ControlFlow>,
+	skipping: bool,
+) {
+	if skipping {
+		return;
+	}
+	if !parameters.is_empty() {
+		panic!(
+			"Expecting no parameters to endcapture. Encountered: {:?}",
+			parameters
+		)
+	}
+
+	let cf = cf_stack
+		.pop()
+		.expect("Encountered endcapture when control flow stack was empty.");
+	match cf {
+		ControlFlow::Capture { variable, content } => assign_inner(
+			&variable,
+			Value::String(String::from_utf8_lossy(&content).to_string()),
+			outer_variables,
+			cf_stack,
+		),
+		_ => panic!(
+			"Expected capture as front-most control flow element but got: {:?}",
+			cf
+		),
+	}
 }
 
 fn start_if(
@@ -1181,6 +1326,7 @@ fn end_for<T: Read + Seek>(
 			..
 		} => {
 			*index += 1;
+			local_variables.clear();
 			if index < end {
 				local_variables
 					.insert(variable.clone(), values[*index].clone());
