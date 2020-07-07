@@ -47,16 +47,22 @@ enum Value {
 }
 
 enum ControlFlow {
-	For(LoopInfo),
-	If(bool),
+	For {
+		values: Vec<Value>,
+		variable: String,
+		index: usize,
+		end: usize,
+		buffer_start_position: u64,
+	},
+	If {
+		condition: bool,
+	},
 }
 
-struct LoopInfo {
-	values: Vec<Value>,
-	variable: String,
-	index: usize,
-	end: usize,
-	buffer_start_position: u64,
+impl ControlFlow {
+	fn if_new(condition: bool) -> ControlFlow {
+		ControlFlow::If { condition }
+	}
 }
 
 // Rolling a simple version of Liquid parsing on my own since the official Rust
@@ -128,8 +134,8 @@ pub fn process<T: Read + Seek>(
 		};
 
 		let skipping = cf_stack.last().map_or(false, |cf| match cf {
-			ControlFlow::For(loop_info) => loop_info.values.is_empty(),
-			ControlFlow::If(cond) => !*cond,
+			ControlFlow::For { values, .. } => values.is_empty(),
+			ControlFlow::If { condition, .. } => !*condition,
 		});
 
 		match state {
@@ -705,9 +711,14 @@ fn fetch_field(
 	} else {
 		for cf in cf_stack.iter().rev() {
 			match cf {
-				ControlFlow::For(loop_element) => {
-					if loop_element.variable == object {
-						let value = &loop_element.values[loop_element.index];
+				ControlFlow::For {
+					variable,
+					values,
+					index,
+					..
+				} => {
+					if variable == object {
+						let value = &values[*index];
 						match value {
 							Value::Dictionary(dict) => {
 								return dict
@@ -728,7 +739,7 @@ fn fetch_field(
 						}
 					}
 				}
-				ControlFlow::If(..) => {}
+				ControlFlow::If { .. } => {}
 			}
 		}
 
@@ -794,12 +805,17 @@ fn fetch_value(
 
 	for cf in cf_stack.iter().rev() {
 		match cf {
-			ControlFlow::For(loop_element) => {
-				if loop_element.variable == name {
-					return loop_element.values[loop_element.index].clone();
+			ControlFlow::For {
+				variable,
+				values,
+				index,
+				..
+			} => {
+				if variable == name {
+					return values[*index].clone();
 				}
 			}
-			ControlFlow::If(..) => {}
+			ControlFlow::If { .. } => {}
 		}
 	}
 
@@ -860,7 +876,7 @@ fn start_if(
 	context: &Context,
 ) {
 	if skipping {
-		cf_stack.push(ControlFlow::If(false));
+		cf_stack.push(ControlFlow::if_new(false));
 		return;
 	}
 
@@ -876,11 +892,11 @@ fn start_if(
 	let rhs = fetch_template_value(&parameters[2], cf_stack, context);
 
 	match parameters[1].borrow() {
-		"==" => cf_stack.push(ControlFlow::If(lhs == rhs)),
-		"!=" => cf_stack.push(ControlFlow::If(lhs != rhs)),
+		"==" => cf_stack.push(ControlFlow::if_new(lhs == rhs)),
+		"!=" => cf_stack.push(ControlFlow::if_new(lhs != rhs)),
 		"<" => {
 			if let (Value::Integer(l), Value::Integer(r)) = (&lhs, &rhs) {
-				cf_stack.push(ControlFlow::If(l < r))
+				cf_stack.push(ControlFlow::if_new(l < r))
 			} else {
 				panic!(
 					"Expecting to compare integer types but got {:?} and {:?}",
@@ -890,7 +906,7 @@ fn start_if(
 		}
 		">" => {
 			if let (Value::Integer(l), Value::Integer(r)) = (&lhs, &rhs) {
-				cf_stack.push(ControlFlow::If(l > r))
+				cf_stack.push(ControlFlow::if_new(l > r))
 			} else {
 				panic!(
 					"Expecting to compare integer types but got {:?} and {:?}",
@@ -900,7 +916,7 @@ fn start_if(
 		}
 		"<=" => {
 			if let (Value::Integer(l), Value::Integer(r)) = (&lhs, &rhs) {
-				cf_stack.push(ControlFlow::If(l <= r))
+				cf_stack.push(ControlFlow::if_new(l <= r))
 			} else {
 				panic!(
 					"Expecting to compare integer types but got {:?} and {:?}",
@@ -910,7 +926,7 @@ fn start_if(
 		}
 		">=" => {
 			if let (Value::Integer(l), Value::Integer(r)) = (&lhs, &rhs) {
-				cf_stack.push(ControlFlow::If(l >= r))
+				cf_stack.push(ControlFlow::if_new(l >= r))
 			} else {
 				panic!(
 					"Expecting to compare integer types but got {:?} and {:?}",
@@ -936,7 +952,7 @@ fn end_if(parameters: &[String], cf_stack: &mut Vec<ControlFlow>) {
 	let last_index = cf_stack.len() - 1;
 	let cf = &mut cf_stack[last_index];
 	match cf {
-		ControlFlow::If(..) => {
+		ControlFlow::If { .. } => {
 			cf_stack.pop();
 		}
 		_ => panic!("Encountered endif without match preceeding if."),
@@ -1001,7 +1017,7 @@ fn start_for<T: Read + Seek>(
 		min(loop_values.len(), limit)
 	};
 
-	cf_stack.push(ControlFlow::For(LoopInfo {
+	cf_stack.push(ControlFlow::For {
 		end,
 		values: loop_values,
 		variable: variable.to_string(),
@@ -1014,7 +1030,7 @@ fn start_for<T: Read + Seek>(
 					e
 				)
 			}),
-	}))
+	})
 }
 
 fn end_for<T: Read + Seek>(
@@ -1035,15 +1051,20 @@ fn end_for<T: Read + Seek>(
 	let last_index = cf_stack.len() - 1;
 	let cf = &mut cf_stack[last_index];
 	match cf {
-		ControlFlow::For(loop_info) => {
-			loop_info.index += 1;
-			if loop_info.index < loop_info.end {
+		ControlFlow::For {
+			index,
+			end,
+			buffer_start_position,
+			..
+		} => {
+			*index += 1;
+			if index < end {
 				input_file
-					.seek(SeekFrom::Start(loop_info.buffer_start_position))
+					.seek(SeekFrom::Start(*buffer_start_position))
 					.unwrap_or_else(|e| {
 						panic!(
 							"Failed seeking to position {} in input stream: {}",
-							loop_info.buffer_start_position, e
+							buffer_start_position, e
 						)
 					});
 			} else {
