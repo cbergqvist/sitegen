@@ -939,6 +939,7 @@ fn run_function<T: Read + Seek>(
 		"if" => {
 			start_if(parameters, outer_variables, cf_stack, skipping, context)
 		}
+		"else" => r#else(parameters, cf_stack),
 		"endif" => end_if(parameters, cf_stack),
 		"for" => start_for(
 			input_file,
@@ -1191,6 +1192,31 @@ fn start_if(
 	}
 }
 
+fn r#else(parameters: &[String], cf_stack: &mut Vec<ControlFlow>) {
+	if !parameters.is_empty() {
+		panic!(
+			"Expecting no parameters to else. Encountered: {:?}",
+			parameters
+		)
+	}
+
+	let cf = cf_stack
+		.last_mut()
+		.expect("Encountered else when control flow stack was empty.");
+	match cf {
+		ControlFlow::If {
+			condition,
+			local_variables,
+		} => {
+			local_variables.clear();
+			*condition = !*condition
+		}
+		_ => panic!(
+			"Encountered else without match preceeding if, had {:?} instead."
+		),
+	}
+}
+
 fn end_if(parameters: &[String], cf_stack: &mut Vec<ControlFlow>) {
 	if !parameters.is_empty() {
 		panic!(
@@ -1199,16 +1225,14 @@ fn end_if(parameters: &[String], cf_stack: &mut Vec<ControlFlow>) {
 		)
 	}
 
-	if cf_stack.is_empty() {
-		panic!("Encountered endif without preceding if.");
-	}
-	let last_index = cf_stack.len() - 1;
-	let cf = &mut cf_stack[last_index];
+	let cf = cf_stack
+		.pop()
+		.expect("Encountered endif when control flow stack was empty.");
 	match cf {
-		ControlFlow::If { .. } => {
-			cf_stack.pop();
-		}
-		_ => panic!("Encountered endif without match preceeding if."),
+		ControlFlow::If { .. } => {}
+		_ => panic!(
+			"Encountered endif without match preceeding if, had {:?} instead."
+		),
 	}
 }
 
