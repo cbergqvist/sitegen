@@ -53,6 +53,13 @@ impl OutputFile {
 			path: self.path,
 		}
 	}
+
+	pub fn clone_to_option(&self) -> OptionOutputFile {
+		OptionOutputFile {
+			front_matter: Some(self.front_matter.clone()),
+			path: self.path.clone(),
+		}
+	}
 }
 
 pub struct InputFileCollection {
@@ -175,6 +182,123 @@ pub fn process_file(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
+	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
+	groups: &mut HashMap<String, Vec<OutputFile>>,
+) -> GeneratedFile {
+	assert_eq!(
+		input_file_path.extension(),
+		Some(OsStr::new(util::MARKDOWN_EXTENSION))
+	);
+
+	let timer = Instant::now();
+
+	let output_file =
+		input_output_map.get(input_file_path).unwrap_or_else(|| {
+			panic!(
+				"Failed finding {} in {:?}",
+				input_file_path.display(),
+				input_output_map.keys()
+			)
+		});
+
+	let mut input_file =
+		BufReader::new(fs::File::open(&input_file_path).unwrap_or_else(|e| {
+			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
+		}));
+
+	let output_file_path = &output_file.path;
+	let front_matter = output_file.front_matter.as_ref().unwrap_or_else(|| {
+		panic!(
+			"Expecting at least a default FrontMatter instance on file: {}",
+			output_file_path.display()
+		)
+	});
+	input_file
+		.seek(SeekFrom::Start(front_matter.end_position))
+		.unwrap_or_else(|e| {
+			panic!("Failed seeking in {}: {}", input_file_path.display(), e)
+		});
+
+	let mut processed_markdown_content = BufWriter::new(Vec::new());
+
+	liquid::process(
+		&mut input_file,
+		&mut processed_markdown_content,
+		&liquid::Context {
+			input_file_path,
+			output_file_path: &output_file_path,
+			front_matter: &front_matter,
+			html_content: None,
+			root_input_dir,
+			root_output_dir,
+			input_output_map,
+			groups,
+		},
+	);
+
+	let markdown_content = String::from_utf8_lossy(
+		&processed_markdown_content
+			.into_inner()
+			.unwrap_or_else(|e| panic!("into_inner() failed: {}", e)),
+	)
+	.to_string();
+
+	let mut output_buf = BufWriter::new(Vec::new());
+	let template_path_result =
+		compute_template_path(input_file_path, root_input_dir);
+
+	let mut html_content = String::new();
+	html::push_html(&mut html_content, Parser::new(&markdown_content));
+
+	let mut template_file = BufReader::new(
+		fs::File::open(&template_path_result.path).unwrap_or_else(|e| {
+			panic!(
+				"Failed opening template file {}: {}",
+				template_path_result.path.display(),
+				e
+			)
+		}),
+	);
+
+	liquid::process(
+		&mut template_file,
+		&mut output_buf,
+		&liquid::Context {
+			input_file_path: &template_path_result.path,
+			output_file_path: &output_file_path,
+			front_matter,
+			html_content: Some(&html_content),
+			root_input_dir,
+			root_output_dir,
+			input_output_map,
+			groups,
+		},
+	);
+
+	write_buffer_to_file(output_buf.buffer(), &output_file_path);
+
+	println!(
+		"Converted {} to {} (using template {}) in {} ms.",
+		input_file_path.display(),
+		&output_file_path.display(),
+		template_path_result.path.display(),
+		timer.elapsed().as_millis()
+	);
+
+	GeneratedFile {
+		file: OutputFile {
+			front_matter: front_matter.clone(),
+			path: strip_prefix(&output_file_path, root_output_dir),
+		},
+		group: template_path_result.group,
+		html_content,
+	}
+}
+
+pub fn reprocess_file(
+	input_file_path: &PathBuf,
+	root_input_dir: &PathBuf,
+	root_output_dir: &PathBuf,
 	input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
 	groups: &mut HashMap<String, Vec<OutputFile>>,
 ) -> GeneratedFile {
@@ -185,26 +309,29 @@ pub fn process_file(
 
 	let timer = Instant::now();
 
-	let output_file = input_output_map
-		.entry(input_file_path.clone())
-		.or_insert_with(|| {
-			let grouped_file = compute_output_path(
-				input_file_path,
-				root_input_dir,
-				root_output_dir,
-			);
-			if let Some(group) = grouped_file.group {
-				let file = grouped_file.file.clone();
-				match groups.entry(group) {
-					Entry::Vacant(ve) => {
-						ve.insert(vec![file]);
-					}
-					Entry::Occupied(oe) => oe.into_mut().push(file),
+	let grouped_file =
+		compute_output_path(input_file_path, root_input_dir, root_output_dir);
+	let output_file = grouped_file.file;
+	input_output_map
+		.insert(input_file_path.clone(), output_file.clone_to_option());
+
+	// TODO: Remove from previous group, if changing groups.
+	if let Some(group) = grouped_file.group {
+		let file = output_file.clone();
+		match groups.entry(group) {
+			Entry::Vacant(ve) => {
+				ve.insert(vec![file]);
+			}
+			Entry::Occupied(oe) => {
+				let v = oe.into_mut();
+				if let Some(e) = v.iter_mut().find(|f| f.path == file.path) {
+					*e = file
+				} else {
+					v.push(file)
 				}
 			}
-			grouped_file.file.convert_to_option()
-		})
-		.clone();
+		}
+	}
 
 	let mut input_file =
 		BufReader::new(fs::File::open(&input_file_path).unwrap_or_else(|e| {
@@ -212,12 +339,7 @@ pub fn process_file(
 		}));
 
 	let output_file_path = output_file.path;
-	let front_matter = output_file.front_matter.unwrap_or_else(|| {
-		panic!(
-			"Expecting at least a default FrontMatter instance on file: {}",
-			output_file_path.display()
-		)
-	});
+	let front_matter = output_file.front_matter;
 	input_file
 		.seek(SeekFrom::Start(front_matter.end_position))
 		.unwrap_or_else(|e| {
@@ -304,6 +426,76 @@ pub fn process_template_file(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
+	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
+	groups: &mut HashMap<String, Vec<OutputFile>>,
+) -> PathBuf {
+	assert_eq!(
+		input_file_path.extension(),
+		Some(OsStr::new(util::HTML_EXTENSION))
+	);
+
+	let timer = Instant::now();
+
+	let output_file =
+		input_output_map.get(input_file_path).unwrap_or_else(|| {
+			panic!(
+				"Failed finding {} in {:?}",
+				input_file_path.display(),
+				input_output_map.keys()
+			)
+		});
+
+	let mut input_file =
+		BufReader::new(fs::File::open(&input_file_path).unwrap_or_else(|e| {
+			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
+		}));
+
+	let output_file_path = &output_file.path;
+	let front_matter = output_file.front_matter.as_ref().unwrap_or_else(|| {
+		panic!(
+			"Expecting at least a default FrontMatter instance on file: {}",
+			output_file_path.display()
+		)
+	});
+	input_file
+		.seek(SeekFrom::Start(front_matter.end_position))
+		.unwrap_or_else(|e| {
+			panic!("Failed seeking in {}: {}", input_file_path.display(), e)
+		});
+
+	let mut output_buf = BufWriter::new(Vec::new());
+
+	liquid::process(
+		&mut input_file,
+		&mut output_buf,
+		&liquid::Context {
+			input_file_path,
+			output_file_path,
+			front_matter,
+			html_content: None,
+			root_input_dir,
+			root_output_dir,
+			input_output_map,
+			groups,
+		},
+	);
+
+	write_buffer_to_file(output_buf.buffer(), &output_file_path);
+
+	println!(
+		"Processed markdown-less {} to {} in {} ms.",
+		input_file_path.display(),
+		output_file_path.display(),
+		timer.elapsed().as_millis(),
+	);
+
+	strip_prefix(&output_file_path, root_output_dir)
+}
+
+pub fn reprocess_template_file(
+	input_file_path: &PathBuf,
+	root_input_dir: &PathBuf,
+	root_output_dir: &PathBuf,
 	input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
 	groups: &mut HashMap<String, Vec<OutputFile>>,
 ) -> PathBuf {
@@ -314,18 +506,11 @@ pub fn process_template_file(
 
 	let timer = Instant::now();
 
-	let output_file = input_output_map
-		.entry(input_file_path.clone())
-		.or_insert_with(|| {
-			compute_output_path(
-				input_file_path,
-				root_input_dir,
-				root_output_dir,
-			)
-			.file
-			.convert_to_option()
-		})
-		.clone();
+	let output_file =
+		compute_output_path(input_file_path, root_input_dir, root_output_dir)
+			.file;
+	input_output_map
+		.insert(input_file_path.clone(), output_file.clone_to_option());
 
 	let mut input_file =
 		BufReader::new(fs::File::open(&input_file_path).unwrap_or_else(|e| {
@@ -333,12 +518,7 @@ pub fn process_template_file(
 		}));
 
 	let output_file_path = output_file.path;
-	let front_matter = output_file.front_matter.unwrap_or_else(|| {
-		panic!(
-			"Expecting at least a default FrontMatter instance on file: {}",
-			output_file_path.display()
-		)
-	});
+	let front_matter = output_file.front_matter;
 	input_file
 		.seek(SeekFrom::Start(front_matter.end_position))
 		.unwrap_or_else(|e| {
@@ -411,7 +591,7 @@ pub fn compute_output_path(
 	if input_file_path.starts_with(root_input_dir) {
 		path.push(
 			strip_prefix(input_file_path, root_input_dir)
-				.with_extension("html"),
+				.with_extension(util::HTML_EXTENSION),
 		);
 	} else {
 		let full_root_input_path = fs::canonicalize(root_input_dir)
@@ -425,7 +605,7 @@ pub fn compute_output_path(
 		if input_file_path.starts_with(&full_root_input_path) {
 			path.push(
 				strip_prefix(input_file_path, &full_root_input_path)
-					.with_extension("html"),
+					.with_extension(util::HTML_EXTENSION),
 			);
 		} else {
 			panic!(

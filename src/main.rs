@@ -223,7 +223,7 @@ fn build_initial_input_output_map(
 
 	for group in groups.keys() {
 		let xml_file = PathBuf::from("feeds")
-			.join(PathBuf::from(group).with_extension("xml"));
+			.join(PathBuf::from(group).with_extension(util::XML_EXTENSION));
 		checked_insert(
 			input_dir.join(&xml_file), // virtual input
 			GroupedOutputFile {
@@ -514,19 +514,26 @@ fn get_path_to_refresh(
 	});
 
 	if input_file_path.extension() == Some(markdown_extension) {
-		Some(
-			markdown::process_file(
-				input_file_path,
-				input_dir,
-				output_dir,
-				input_output_map,
-				groups,
-			)
-			.file
-			.path
-			.to_string_lossy()
-			.to_string(),
-		)
+		let generated_file = markdown::reprocess_file(
+			input_file_path,
+			input_dir,
+			output_dir,
+			input_output_map,
+			groups,
+		);
+		if let Some(group) = generated_file.group {
+			let index_file = input_dir.join(group).join("index.html");
+			if index_file.exists() {
+				markdown::process_template_file(
+					&index_file,
+					input_dir,
+					output_dir,
+					input_output_map,
+					groups,
+				);
+			}
+		}
+		Some(generated_file.file.path.to_string_lossy().to_string())
 	} else if input_file_path.extension() == Some(html_extension) {
 		handle_html_updated(
 			input_file_path,
@@ -616,7 +623,7 @@ fn handle_html_updated(
 		if files_using_layout.is_empty() {
 			let templated_file = input_dir
 				.join(template_file_stem)
-				.with_extension(OsStr::new(util::MARKDOWN_EXTENSION));
+				.with_extension(util::MARKDOWN_EXTENSION);
 			if templated_file.exists() {
 				Some(
 					markdown::process_file(
@@ -666,7 +673,7 @@ fn handle_html_updated(
 		Some(String::from(util::RELOAD_CURRENT))
 	} else {
 		Some(
-			markdown::process_template_file(
+			markdown::reprocess_template_file(
 				input_file_path,
 				input_dir,
 				output_dir,
