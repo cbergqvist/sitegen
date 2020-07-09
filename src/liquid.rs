@@ -29,21 +29,11 @@ struct Position {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct List {
-	values: Vec<Value>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct Dictionary {
-	map: HashMap<&'static str, Value>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
 enum Value {
 	String(String),
 	Integer(i32),
-	List(List),
-	Dictionary(Dictionary),
+	List { values: Vec<Value> },
+	Dictionary { map: HashMap<&'static str, Value> },
 }
 
 #[derive(Debug)]
@@ -576,11 +566,11 @@ fn output_template_value(
 		match fetch_template_value(name, outer_variables, cf_stack, context) {
 			Value::String(s) => s,
 			Value::Integer(i) => i.to_string(),
-			Value::List(..) => panic!(
+			Value::List { .. } => panic!(
 				"Cannot output list value {} directly, maybe use a for-loop?",
 				name
 			),
-			Value::Dictionary(..) => {
+			Value::Dictionary { .. } => {
 				panic!("Cannot output dictionary value {} directly.", name)
 			}
 		};
@@ -814,9 +804,8 @@ fn fetch_field(
 
 		if let Some(value) = value {
 			match value {
-				Value::Dictionary(dict) => {
-					return dict
-						.map
+				Value::Dictionary { map } => {
+					return map
 						.get(field)
 						.unwrap_or_else(|| {
 							panic!("Unhandled field \"{}.{}\"", object, field)
@@ -886,9 +875,9 @@ fn fetch_value(
 				)),
 			);
 
-			result.push(Value::Dictionary(Dictionary { map }))
+			result.push(Value::Dictionary { map })
 		}
-		return Value::List(List { values: result });
+		return Value::List { values: result };
 	}
 
 	for cf in cf_stack.iter().rev() {
@@ -1270,8 +1259,8 @@ fn start_for<T: Read + Seek>(
 			Value::Integer(..) => {
 				panic!("Cannot iterate over one single integer value.")
 			}
-			Value::List(l) => l.values,
-			Value::Dictionary(dict) => dict.map.values().cloned().collect(),
+			Value::List { values } => values,
+			Value::Dictionary { map } => map.values().cloned().collect(),
 		}
 	};
 
