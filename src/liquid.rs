@@ -30,10 +30,28 @@ struct Position {
 
 #[derive(Clone, Debug, PartialEq)]
 enum Value {
+	Boolean(bool),
 	String(String),
 	Integer(i32),
 	List { values: Vec<Value> },
 	Dictionary { map: HashMap<&'static str, Value> },
+}
+
+impl Value {
+	fn len(&self) -> usize {
+		match self {
+			Value::String(s) => s.len(),
+			Value::List { values } => {
+				values.len()
+			}
+			Value::Dictionary { map } => {
+				map.len()
+			}
+			Value::Boolean(..) | Value::Integer(..) => {
+				panic!("Tried to get length of {:?}.", self)
+			}
+		}
+	}
 }
 
 #[derive(Debug)]
@@ -564,6 +582,7 @@ fn output_template_value(
 	let name = &identifiers[0];
 	let mut value =
 		match fetch_template_value(name, outer_variables, cf_stack, context) {
+			Value::Boolean(b) => b.to_string(),
 			Value::String(s) => s,
 			Value::Integer(i) => i.to_string(),
 			Value::List { .. } => panic!(
@@ -694,6 +713,12 @@ fn fetch_template_value(
 		return Value::String(name[1..name.len() - 1].to_string());
 	}
 
+	if name == "true" || name == "false" {
+		return Value::Boolean(name.parse::<bool>().unwrap_or_else(|e| {
+			panic!("Failed converting {} to boolean: {}", name, e)
+		}));
+	}
+
 	{
 		let numeric_offset = if name.chars().next() == Some('-') {
 			1
@@ -717,6 +742,23 @@ fn fetch_template_value(
 			cf_stack,
 			context,
 		),
+		3 => {
+			let value = fetch_field(
+				name_parts[0],
+				name_parts[1],
+				outer_variables,
+				cf_stack,
+				context,
+			);
+
+			match name_parts[2] {
+				"count" => Value::Integer(value.len() as i32),
+				_ => panic!(
+					"Failed getting property {} on {}.{}",
+					name_parts[2], name_parts[0], name_parts[1]
+				),
+			}
+		}
 		_ => panic!("Unexpected identifier: {}", name),
 	}
 }
@@ -735,8 +777,8 @@ fn fetch_field(
 		panic!("Empty field name.")
 	}
 
-	if object == "page" {
-		match field {
+	match object {
+		"page" => match field {
 			"content" => {
 				if let Some(content) = context.html_content {
 					Value::String(String::from(content))
@@ -766,9 +808,22 @@ fn fetch_field(
 					.as_ref()
 					.map_or_else(String::new, String::clone),
 			),
-			// TODO: categories
-			// TODO: tags
-			// TODO: layout
+			"categories" => Value::List {
+				values: context
+					.front_matter
+					.categories
+					.iter()
+					.map(|tag| Value::String(tag.clone()))
+					.collect(),
+			},
+			"tags" => Value::List {
+				values: context
+					.front_matter
+					.tags
+					.iter()
+					.map(|tag| Value::String(tag.clone()))
+					.collect(),
+			},
 			_ => {
 				if let Some(value) =
 					context.front_matter.custom_attributes.get(field)
@@ -778,67 +833,85 @@ fn fetch_field(
 					panic!("Not yet supported field: {}.{}", object, field)
 				}
 			}
-		}
-	} else {
-		let mut value = None;
-		for cf in cf_stack.iter().rev() {
-			match cf {
-				ControlFlow::For {
-					local_variables, ..
-				}
-				| ControlFlow::If {
-					local_variables, ..
-				} => {
-					value = local_variables.get(object);
-					if value.is_some() {
-						break;
+		},
+		"forloop" => match field {
+			"first" => {
+				for cf in cf_stack.iter().rev() {
+					if let ControlFlow::For { index, .. } = cf {
+						return Value::Boolean(*index == 0);
 					}
 				}
-				ControlFlow::Capture { .. } => {}
+				panic!("Trying to access forloop property {} while not in for-loop.", field)
 			}
-		}
-
-		if value.is_none() {
-			value = outer_variables.get(object)
-		}
-
-		if let Some(value) = value {
-			match value {
-				Value::Dictionary { map } => {
-					return map
-						.get(field)
-						.unwrap_or_else(|| {
-							panic!("Unhandled field \"{}.{}\"", object, field)
-						})
-						.clone();
+			_ => panic!("Unsupported forloop property: {}", field),
+		},
+		_ => {
+			let mut value = None;
+			for cf in cf_stack.iter().rev() {
+				match cf {
+					ControlFlow::For {
+						local_variables, ..
+					}
+					| ControlFlow::If {
+						local_variables, ..
+					} => {
+						value = local_variables.get(object);
+						if value.is_some() {
+							break;
+						}
+					}
+					ControlFlow::Capture { .. } => {}
 				}
-				_ => panic!(
-					"Unexpected type of value in \"{}(.{})\": {:?}",
-					object, field, value
-				),
 			}
-		}
 
-		if let Some(entries) = context.groups.get(object) {
-			match field {
-				"count" => {
-					return Value::Integer(
-						entries.len().try_into().unwrap_or_else(|e| {
-							panic!(
-								"Failed converting {}.{} with value {} to i32: {}",
-								object,
-								field,
-								entries.len(),
-								e
-							)
-						}),
-					)
+			if value.is_none() {
+				value = outer_variables.get(object)
+			}
+
+			if let Some(value) = value {
+				match value {
+					Value::Dictionary { map } => {
+						return map
+							.get(field)
+							.unwrap_or_else(|| {
+								panic!(
+									"Unhandled field \"{}.{}\"",
+									object, field
+								)
+							})
+							.clone();
+					}
+					_ => panic!(
+						"Unexpected type of value in \"{}(.{})\": {:?}",
+						object, field, value
+					),
 				}
-				_ => panic!("Unhandled field {} on object {}.", field, object),
 			}
-		}
 
-		panic!("Unhandled object \"{}\"", object)
+			if let Some(entries) = context.groups.get(object) {
+				match field {
+					"count" => {
+						return Value::Integer(
+							entries.len().try_into().unwrap_or_else(|e| {
+								panic!(
+									"Failed converting {}.{} with value {} to i32: {}",
+									object,
+									field,
+									entries.len(),
+									e
+								)
+							}),
+						)
+					}
+					_ => panic!(
+						"Unhandled field {} on object {}.",
+						field, object
+					),
+				}
+			}
+
+			panic!("Unhandled object \"{}\"", object)
+		}
 	}
 }
 
@@ -1247,17 +1320,18 @@ fn start_for<T: Read + Seek>(
 	let loop_values: Vec<Value> = if skipping {
 		Vec::new()
 	} else {
-		match fetch_template_value(
+		let value = fetch_template_value(
 			loop_values_name,
 			outer_variables,
 			cf_stack,
 			context,
-		) {
+		);
+		match value {
 			Value::String(s) => {
 				s.chars().map(|c| Value::String(c.to_string())).collect()
 			}
-			Value::Integer(..) => {
-				panic!("Cannot iterate over one single integer value.")
+			Value::Boolean(..) | Value::Integer(..) => {
+				panic!("Cannot iterate over one single {:?}.",)
 			}
 			Value::List { values } => values,
 			Value::Dictionary { map } => map.values().cloned().collect(),
