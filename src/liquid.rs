@@ -38,18 +38,31 @@ enum Value {
 }
 
 impl Value {
-	fn len(&self) -> usize {
-		match self {
-			Value::String(s) => s.len(),
-			Value::List { values } => {
-				values.len()
+	fn get_field(&self, field: &str) -> Value {
+		if let Value::Dictionary { map } = self {
+			if let Some(map_value) = map.get(field) {
+				return map_value.clone();
 			}
-			Value::Dictionary { map } => {
-				map.len()
+		}
+
+		match field {
+			"count" => {
+				let length = match self {
+					Value::String(s) => s.len(),
+					Value::List { values } => values.len(),
+					Value::Dictionary { map } => map.len(),
+					Value::Boolean(..) | Value::Integer(..) => {
+						panic!("Tried to get length of {:?}.", self)
+					}
+				};
+				Value::Integer(length.try_into().unwrap_or_else(|e| {
+					panic!(
+						"Failed converting length {} of value {:?} to i32: {}",
+						length, self, e
+					)
+				}))
 			}
-			Value::Boolean(..) | Value::Integer(..) => {
-				panic!("Tried to get length of {:?}.", self)
-			}
+			_ => panic!("Failed getting field {} on: {:?}", field, self),
 		}
 	}
 }
@@ -751,13 +764,7 @@ fn fetch_template_value(
 				context,
 			);
 
-			match name_parts[2] {
-				"count" => Value::Integer(value.len() as i32),
-				_ => panic!(
-					"Failed getting property {} on {}.{}",
-					name_parts[2], name_parts[0], name_parts[1]
-				),
-			}
+			value.get_field(name_parts[2])
 		}
 		_ => panic!("Unexpected identifier: {}", name),
 	}
@@ -869,23 +876,7 @@ fn fetch_field(
 			}
 
 			if let Some(value) = value {
-				match value {
-					Value::Dictionary { map } => {
-						return map
-							.get(field)
-							.unwrap_or_else(|| {
-								panic!(
-									"Unhandled field \"{}.{}\"",
-									object, field
-								)
-							})
-							.clone();
-					}
-					_ => panic!(
-						"Unexpected type of value in \"{}(.{})\": {:?}",
-						object, field, value
-					),
-				}
+				return value.get_field(field);
 			}
 
 			if let Some(entries) = context.groups.get(object) {
