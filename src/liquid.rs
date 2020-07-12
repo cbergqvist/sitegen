@@ -1004,30 +1004,15 @@ fn run_function<T: Read + Seek>(
 		),
 		"endfor" => end_for(input_file, parameters, cf_stack),
 		"include" => {
-			if parameters.len() != 1 {
-				panic!("Expecting at least 3 parameters (x in y) in for-loop. Encountered: {:?}", parameters)
-			}
-			if !skipping {
-				let parameter = &parameters[0];
-				include_file(&mut output_buf, parameter, context)
-			}
+			include_file(&mut output_buf, parameters, skipping, context)
 		}
-		"link" => {
-			if parameters.len() != 1 {
-				panic!("Expecting at least 3 parameters (x in y) in for-loop. Encountered: {:?}", parameters)
-			}
-			if !skipping {
-				let parameter = &parameters[0];
-				check_and_emit_link(
-					context.output_file_path,
-					&mut output_buf,
-					parameter,
-					context.root_input_dir,
-					context.root_output_dir,
-					context.input_output_map,
-				)
-			}
-		}
+		"link" => check_and_emit_link(
+			context.output_file_path,
+			&mut output_buf,
+			parameters,
+			skipping,
+			context,
+		),
 		_ => panic!("Unsupported function: {}", function),
 	}
 }
@@ -1427,11 +1412,22 @@ fn end_for<T: Read + Seek>(
 
 fn include_file(
 	mut output_buf: &mut BufWriter<Vec<u8>>,
-	parameter: &str,
+	parameters: &[String],
+	skipping: bool,
 	context: &Context,
 ) {
-	let included_file_path =
-		context.root_input_dir.join("_includes").join(&*parameter);
+	if skipping {
+		return;
+	}
+
+	if parameters.len() != 1 {
+		panic!("Expecting only 1 parameter for include operation. Encountered: {:?}", parameters)
+	}
+
+	let included_file_path = context
+		.root_input_dir
+		.join("_includes")
+		.join(&parameters[0]);
 
 	let mut included_file = BufReader::new(
 		fs::File::open(&included_file_path).unwrap_or_else(|e| {
@@ -1462,11 +1458,22 @@ fn include_file(
 fn check_and_emit_link(
 	output_file_path: &PathBuf,
 	output_buf: &mut BufWriter<Vec<u8>>,
-	parameter: &str,
-	root_input_dir: &PathBuf,
-	root_output_dir: &PathBuf,
-	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
+	parameters: &[String],
+	skipping: bool,
+	context: &Context,
 ) {
+	if skipping {
+		return;
+	}
+
+	if parameters.len() != 1 {
+		panic!(
+			"Expecting 1 parameter in link operation. Encountered: {:?}",
+			parameters
+		)
+	}
+	let parameter = &parameters[0];
+
 	let append_index_html = parameter.ends_with('/');
 	if !parameter.starts_with('/') {
 		panic!(
@@ -1474,17 +1481,17 @@ fn check_and_emit_link(
 			parameter
 		);
 	}
-	let mut path = root_input_dir.join(PathBuf::from(&parameter[1..]));
+	let mut path = context.root_input_dir.join(PathBuf::from(&parameter[1..]));
 	if append_index_html {
 		path = path.join(PathBuf::from("index.html"));
 	}
 
-	let linked_output_path = &match input_output_map.get(&path) {
+	let linked_output_path = &match context.input_output_map.get(&path) {
 		Some(lo) => lo,
 		_ => panic!(
 			"Failed finding {} among: {:#?}",
 			path.display(),
-			input_output_map.keys()
+			context.input_output_map.keys()
 		),
 	}
 	.path;
@@ -1493,7 +1500,7 @@ fn check_and_emit_link(
 		make_relative_link(
 			output_file_path,
 			linked_output_path,
-			root_output_dir,
+			context.root_output_dir,
 		)
 		.as_bytes(),
 		output_buf,
