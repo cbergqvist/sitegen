@@ -901,7 +901,11 @@ fn fetch_field(
 				}
 			}
 
-			panic!("Unhandled object \"{}\"", object)
+			panic!(
+				"Unhandled object \"{}\", file: {}",
+				object,
+				context.input_file_path.display()
+			)
 		}
 	}
 }
@@ -1010,6 +1014,8 @@ fn run_function<T: Read + Seek>(
 			context.output_file_path,
 			&mut output_buf,
 			parameters,
+			outer_variables,
+			cf_stack,
 			skipping,
 			context,
 		),
@@ -1459,6 +1465,8 @@ fn check_and_emit_link(
 	output_file_path: &PathBuf,
 	output_buf: &mut BufWriter<Vec<u8>>,
 	parameters: &[String],
+	outer_variables: &HashMap<String, Value>,
+	cf_stack: &[ControlFlow],
 	skipping: bool,
 	context: &Context,
 ) {
@@ -1472,7 +1480,20 @@ fn check_and_emit_link(
 			parameters
 		)
 	}
-	let parameter = &parameters[0];
+
+	let value = fetch_template_value(
+		&parameters[0],
+		outer_variables,
+		cf_stack,
+		context,
+	);
+	let parameter = match value {
+		Value::String(s) => s,
+		_ => panic!(
+			"Expected string value but got {} - {:?}",
+			parameters[0], value
+		),
+	};
 
 	let append_index_html = parameter.ends_with('/');
 	if !parameter.starts_with('/') {

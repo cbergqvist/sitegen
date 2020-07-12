@@ -26,7 +26,7 @@ fn test_liquid_link() {
 	let output_file_path = PathBuf::from("./output/virtual_test.html");
 	let front_matter = create_front_matter("Title", None);
 	let mut input_file = BufReader::new(Cursor::new(
-		(r#"[Foo]({% link /virtual_test.md %})"#).as_bytes(),
+		(r#"[Foo]({% link "/virtual_test.md" %})"#).as_bytes(),
 	));
 
 	let mut input_output_map = HashMap::new();
