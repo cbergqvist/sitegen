@@ -5,6 +5,7 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 use crate::front_matter;
+use crate::util;
 use crate::util::{strip_prefix, write_to_stream};
 
 pub struct FeedHeader {
@@ -53,7 +54,7 @@ pub fn generate(
 
 		let feed_name = output_dir
 			.join(PathBuf::from("feeds").join(PathBuf::from(&group)))
-			.with_extension("xml");
+			.with_extension(util::XML_EXTENSION);
 		let header = FeedHeader {
 			title: group.to_string(),
 			base_url: base_url.to_string(),
