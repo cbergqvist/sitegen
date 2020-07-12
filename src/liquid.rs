@@ -65,6 +65,18 @@ impl Value {
 			_ => panic!("Failed getting field {} on: {:?}", field, self),
 		}
 	}
+
+	fn to_string(&self) -> String {
+		match self {
+			Value::Boolean(b) => b.to_string(),
+			Value::String(s) => s.clone(),
+			Value::Integer(i) => i.to_string(),
+			Value::Dictionary { .. } | Value::List { .. } => panic!(
+				"Conversion to string for this type of value is not supported: {:?}",
+				self
+			),
+		}
+	}
 }
 
 #[derive(Debug)]
@@ -619,9 +631,24 @@ fn output_template_value(
 
 		let filter_function = &identifiers[offset + 1];
 		match filter_function.borrow() {
+			"append" => {
+				if identifiers.len() < offset + 2 {
+					panic!("append filter function requires a parameter.")
+				}
+				value.push_str(
+					&fetch_template_value(
+						&identifiers[offset + 2],
+						outer_variables,
+						cf_stack,
+						context,
+					)
+					.to_string(),
+				);
+				offset += 3
+			}
 			"date" => {
 				if identifiers.len() < offset + 2 {
-					panic!("date filter function requires a parameter.");
+					panic!("date filter function requires a parameter.")
 				}
 				let format_string = match fetch_template_value(
 					&identifiers[offset + 2],
@@ -637,7 +664,7 @@ fn output_template_value(
 
 				const EXAMPLE_DATETIME: &str = "2001-01-19T20:10:01Z";
 				if value.len() != EXAMPLE_DATETIME.len() {
-					panic!("date filter requires valid date format such as {}, but got: {}", EXAMPLE_DATETIME, value);
+					panic!("date filter requires valid date format such as {}, but got: {}", EXAMPLE_DATETIME, value)
 				}
 				let mut special = false;
 				let mut result = String::new();
