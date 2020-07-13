@@ -485,7 +485,7 @@ fn spawn_listening_thread(
 		.unwrap_or_else(|e| {
 			panic!("Failed to bind TCP listening port {}:{}: {}", host, port, e)
 		});
-	println!("Listening for connections on {}:{}", host, port);
+	println!("Listening for connections on http://{}:{}/dev", host, port);
 
 	let listener_builder =
 		thread::Builder::new().name("TCP_listener".to_string());
