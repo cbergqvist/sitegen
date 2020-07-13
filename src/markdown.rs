@@ -183,7 +183,7 @@ pub fn process_file(
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
 	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
-	groups: &mut HashMap<String, Vec<OutputFile>>,
+	groups: &HashMap<String, Vec<OutputFile>>,
 ) -> GeneratedFile {
 	assert_eq!(
 		input_file_path.extension(),
@@ -309,8 +309,11 @@ pub fn reprocess_file(
 
 	let timer = Instant::now();
 
-	let grouped_file =
-		compute_output_path(input_file_path, root_input_dir, root_output_dir);
+	let grouped_file = parse_fm_and_compute_output_path(
+		input_file_path,
+		root_input_dir,
+		root_output_dir,
+	);
 	let output_file = grouped_file.file;
 	input_output_map
 		.insert(input_file_path.clone(), output_file.clone_to_option());
@@ -427,8 +430,8 @@ pub fn process_template_file(
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
 	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
-	groups: &mut HashMap<String, Vec<OutputFile>>,
-) -> PathBuf {
+	groups: &HashMap<String, Vec<OutputFile>>,
+) {
 	assert_eq!(
 		input_file_path.extension(),
 		Some(OsStr::new(util::HTML_EXTENSION))
@@ -488,8 +491,6 @@ pub fn process_template_file(
 		output_file_path.display(),
 		timer.elapsed().as_millis(),
 	);
-
-	strip_prefix(&output_file_path, root_output_dir)
 }
 
 pub fn reprocess_template_file(
@@ -506,9 +507,12 @@ pub fn reprocess_template_file(
 
 	let timer = Instant::now();
 
-	let output_file =
-		compute_output_path(input_file_path, root_input_dir, root_output_dir)
-			.file;
+	let output_file = parse_fm_and_compute_output_path(
+		input_file_path,
+		root_input_dir,
+		root_output_dir,
+	)
+	.file;
 	input_output_map
 		.insert(input_file_path.clone(), output_file.clone_to_option());
 
@@ -582,7 +586,7 @@ fn write_buffer_to_file(buffer: &[u8], path: &PathBuf) {
 	});
 }
 
-pub fn compute_output_path(
+pub fn parse_fm_and_compute_output_path(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,

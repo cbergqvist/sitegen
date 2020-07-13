@@ -90,8 +90,8 @@ fn inner_main(config: &config::Config) {
 			&input_files,
 			&config.input_dir,
 			&config.output_dir,
-			&mut input_output_map,
-			&mut groups,
+			&input_output_map,
+			&groups,
 		);
 
 		atom::generate(
@@ -170,8 +170,9 @@ fn build_initial_input_output_map(
 	// actual processing of files, we have records of all other files.
 	// This allows us to properly detect broken links.
 	for file_name in &input_files.html {
-		let output_file =
-			markdown::compute_output_path(file_name, input_dir, output_dir);
+		let output_file = markdown::parse_fm_and_compute_output_path(
+			file_name, input_dir, output_dir,
+		);
 		checked_insert(
 			file_name.clone(),
 			GroupedOutputFile {
@@ -179,12 +180,13 @@ fn build_initial_input_output_map(
 				group: output_file.group,
 			},
 			&mut input_output_map,
-			&mut groups,
+			Some(&mut groups),
 		)
 	}
 	for file_name in &input_files.markdown {
-		let output_file =
-			markdown::compute_output_path(file_name, input_dir, output_dir);
+		let output_file = markdown::parse_fm_and_compute_output_path(
+			file_name, input_dir, output_dir,
+		);
 		checked_insert(
 			file_name.clone(),
 			GroupedOutputFile {
@@ -192,7 +194,7 @@ fn build_initial_input_output_map(
 				group: output_file.group,
 			},
 			&mut input_output_map,
-			&mut groups,
+			Some(&mut groups),
 		)
 	}
 	for file_name in &input_files.raw {
@@ -208,7 +210,7 @@ fn build_initial_input_output_map(
 				group: None,
 			},
 			&mut input_output_map,
-			&mut groups,
+			Some(&mut groups),
 		)
 	}
 
@@ -223,7 +225,8 @@ fn build_initial_input_output_map(
 
 	for group in groups.keys() {
 		let xml_file = PathBuf::from("feeds")
-			.join(PathBuf::from(group).with_extension(util::XML_EXTENSION));
+			.join(group)
+			.with_extension(util::XML_EXTENSION);
 		checked_insert(
 			input_dir.join(&xml_file), // virtual input
 			GroupedOutputFile {
@@ -234,7 +237,7 @@ fn build_initial_input_output_map(
 				group: None,
 			},
 			&mut input_output_map,
-			&mut HashMap::new(),
+			None,
 		)
 	}
 
@@ -245,17 +248,17 @@ fn process_initial_files(
 	input_files: &markdown::InputFileCollection,
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
-	mut input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
-	mut groups: &mut HashMap<String, Vec<OutputFile>>,
+	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
+	groups: &HashMap<String, Vec<OutputFile>>,
 ) -> HashMap<String, Vec<atom::FeedEntry>> {
 	let mut feed_map = HashMap::new();
 
 	for file_name in &input_files.html {
-		let _path = markdown::process_template_file(
+		markdown::process_template_file(
 			file_name,
 			input_dir,
 			output_dir,
-			&mut input_output_map,
+			input_output_map,
 			groups,
 		);
 	}
@@ -265,8 +268,8 @@ fn process_initial_files(
 			file_name,
 			input_dir,
 			output_dir,
-			&mut input_output_map,
-			&mut groups,
+			input_output_map,
+			groups,
 		);
 		if let Some(group) = generated.group {
 			let entry = atom::FeedEntry {
@@ -290,7 +293,7 @@ fn checked_insert(
 	key: PathBuf,
 	value: GroupedOutputFile,
 	path_map: &mut HashMap<PathBuf, OptionOutputFile>,
-	group_map: &mut HashMap<String, Vec<OutputFile>>,
+	group_map: Option<&mut HashMap<String, Vec<OutputFile>>>,
 ) {
 	match path_map.entry(key) {
 		Entry::Occupied(oe) => {
@@ -311,18 +314,20 @@ fn checked_insert(
 				return;
 			}
 
-			if let Some(group) = value.group {
-				let path = value.file.path;
-				let file = OutputFile {
-					front_matter: value.file.front_matter
-						.unwrap_or_else(|| panic!("Expect front matter for grouped files, but didn't get one for {}.", path.display())),
-					path,
-				};
-				match group_map.entry(group) {
-					Entry::Vacant(ve) => {
-						ve.insert(vec![file]);
+			if let Some(group_map) = group_map {
+				if let Some(group) = value.group {
+					let path = value.file.path;
+					let file = OutputFile {
+						front_matter: value.file.front_matter
+							.unwrap_or_else(|| panic!("Expect front matter for grouped files, but didn't get one for {}.", path.display())),
+						path,
+					};
+					match group_map.entry(group) {
+						Entry::Vacant(ve) => {
+							ve.insert(vec![file]);
+						}
+						Entry::Occupied(oe) => oe.into_mut().push(file),
 					}
-					Entry::Occupied(oe) => oe.into_mut().push(file),
 				}
 			}
 		}
