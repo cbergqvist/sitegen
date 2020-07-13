@@ -232,8 +232,8 @@ pub fn process_file(
 		HashMap::new(),
 		&liquid::Context {
 			input_file_path,
-			output_file_path: &output_file_path,
-			front_matter: &front_matter,
+			output_file_path,
+			front_matter,
 			html_content: None,
 			root_input_dir,
 			root_output_dir,
@@ -272,7 +272,7 @@ pub fn process_file(
 		HashMap::new(),
 		&liquid::Context {
 			input_file_path: &template_path_result.path,
-			output_file_path: &output_file_path,
+			output_file_path,
 			front_matter,
 			html_content: Some(&html_content),
 			root_input_dir,
@@ -282,7 +282,7 @@ pub fn process_file(
 		},
 	);
 
-	write_buffer_to_file(output_buf.buffer(), &output_file_path);
+	write_buffer_to_file(output_buf.buffer(), output_file_path);
 
 	println!(
 		"Converted {} to {} (using template {}) in {} ms.",
@@ -295,7 +295,7 @@ pub fn process_file(
 	GeneratedFile {
 		file: OutputFile {
 			front_matter: front_matter.clone(),
-			path: strip_prefix(&output_file_path, root_output_dir),
+			path: strip_prefix(output_file_path, root_output_dir),
 		},
 		group: template_path_result.group,
 		html_content,
@@ -499,7 +499,7 @@ pub fn process_template_file(
 		},
 	);
 
-	write_buffer_to_file(output_buf.buffer(), &output_file_path);
+	write_buffer_to_file(output_buf.buffer(), output_file_path);
 
 	println!(
 		"Processed markdown-less {} to {} in {} ms.",
@@ -577,7 +577,7 @@ pub fn reprocess_template_file(
 
 pub fn generate_tag_file(
 	input_file_path: &PathBuf,
-	entries: &Vec<InputFile>,
+	entries: &[InputFile],
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
 	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
@@ -653,7 +653,7 @@ pub fn generate_tag_file(
 		},
 	);
 
-	write_buffer_to_file(output_buf.buffer(), &output_file_path);
+	write_buffer_to_file(output_buf.buffer(), output_file_path);
 
 	println!(
 		"Generated tags file {} in {} ms.",

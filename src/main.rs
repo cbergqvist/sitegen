@@ -181,7 +181,7 @@ fn build_initial_fileset(
 			file_name, input_dir, output_dir,
 		);
 		checked_insert(
-			file_name.clone(),
+			file_name,
 			GroupedOutputFile {
 				file: output_file.file.convert_to_option(),
 				group: output_file.group,
@@ -196,7 +196,7 @@ fn build_initial_fileset(
 			file_name, input_dir, output_dir,
 		);
 		checked_insert(
-			file_name.clone(),
+			file_name,
 			GroupedOutputFile {
 				file: output_file.file.convert_to_option(),
 				group: output_file.group,
@@ -210,7 +210,7 @@ fn build_initial_fileset(
 		let output_file_path =
 			output_dir.join(strip_prefix(file_name, input_dir));
 		checked_insert(
-			file_name.clone(),
+			file_name,
 			GroupedOutputFile {
 				file: OptionOutputFile {
 					path: output_file_path,
@@ -229,12 +229,12 @@ fn build_initial_fileset(
 	// exactly equal front matter dates in the same order.
 	for entries in result.groups.values_mut() {
 		entries.sort_by(|lhs, rhs| {
-			return rhs.front_matter.date.cmp(&lhs.front_matter.date);
+			rhs.front_matter.date.cmp(&lhs.front_matter.date)
 		})
 	}
 	for entries in result.tags.values_mut() {
 		entries.sort_by(|lhs, rhs| {
-			return rhs.front_matter.date.cmp(&lhs.front_matter.date);
+			rhs.front_matter.date.cmp(&lhs.front_matter.date)
 		})
 	}
 
@@ -243,7 +243,7 @@ fn build_initial_fileset(
 			.join(group)
 			.with_extension(util::XML_EXTENSION);
 		checked_insert(
-			input_dir.join(&xml_file), // virtual input
+			&input_dir.join(&xml_file), // virtual input
 			GroupedOutputFile {
 				file: OptionOutputFile {
 					path: output_dir.join(xml_file),
@@ -262,7 +262,7 @@ fn build_initial_fileset(
 			.join(&tag)
 			.with_extension(util::HTML_EXTENSION);
 		checked_insert(
-			input_dir.join(&tags_file), // virtual input
+			&input_dir.join(&tags_file), // virtual input
 			GroupedOutputFile {
 				file: OptionOutputFile {
 					path: output_dir.join(tags_file),
@@ -351,7 +351,7 @@ fn process_initial_files(
 }
 
 fn checked_insert(
-	key: PathBuf,
+	key: &PathBuf,
 	value: GroupedOutputFile,
 	path_map: &mut HashMap<PathBuf, OptionOutputFile>,
 	group_map: Option<&mut HashMap<String, Vec<InputFile>>>,

@@ -38,8 +38,8 @@ pub enum Value {
 }
 
 impl Value {
-	fn get_field(&self, field: &str) -> Value {
-		if let Value::Dictionary { map } = self {
+	fn get_field(&self, field: &str) -> Self {
+		if let Self::Dictionary { map } = self {
 			if let Some(map_value) = map.get(field) {
 				return map_value.clone();
 			}
@@ -48,14 +48,14 @@ impl Value {
 		match field {
 			"count" => {
 				let length = match self {
-					Value::String(s) => s.len(),
-					Value::List { values } => values.len(),
-					Value::Dictionary { map } => map.len(),
-					Value::Boolean(..) | Value::Integer(..) => {
+					Self::String(s) => s.len(),
+					Self::List { values } => values.len(),
+					Self::Dictionary { map } => map.len(),
+					Self::Boolean(..) | Self::Integer(..) => {
 						panic!("Tried to get length of {:?}.", self)
 					}
 				};
-				Value::Integer(length.try_into().unwrap_or_else(|e| {
+				Self::Integer(length.try_into().unwrap_or_else(|e| {
 					panic!(
 						"Failed converting length {} of value {:?} to i32: {}",
 						length, self, e
@@ -66,12 +66,12 @@ impl Value {
 		}
 	}
 
-	fn to_string(&self) -> String {
+	fn string_content(&self) -> String {
 		match self {
-			Value::Boolean(b) => b.to_string(),
-			Value::String(s) => s.clone(),
-			Value::Integer(i) => i.to_string(),
-			Value::Dictionary { .. } | Value::List { .. } => panic!(
+			Self::Boolean(b) => b.to_string(),
+			Self::String(s) => s.clone(),
+			Self::Integer(i) => i.to_string(),
+			Self::Dictionary { .. } | Self::List { .. } => panic!(
 				"Conversion to string for this type of value is not supported: {:?}",
 				self
 			),
@@ -100,13 +100,15 @@ enum ControlFlow {
 }
 
 impl ControlFlow {
-	fn if_new(condition: bool) -> ControlFlow {
-		ControlFlow::If {
+	fn if_new(condition: bool) -> Self {
+		Self::If {
 			condition,
 			local_variables: HashMap::new(),
 		}
 	}
 }
+
+const EXAMPLE_DATETIME: &str = "2001-01-19T20:10:01Z";
 
 // Rolling a simple version of Liquid parsing on my own since the official Rust
 // one has too many dependencies.
@@ -540,8 +542,8 @@ pub fn process<T: Read + Seek>(
 		if capture_index < cf_stack.len() {
 			match &mut cf_stack[capture_index] {
 				ControlFlow::Capture { content, .. } => {
-					if capture_buf.buffer().len() > 0
-						|| capture_buf.get_ref().len() > 0
+					if !capture_buf.buffer().is_empty()
+						|| !capture_buf.get_ref().is_empty()
 					{
 						content.append(
 							&mut capture_buf.into_inner().unwrap_or_else(|e| {
@@ -642,7 +644,7 @@ fn output_template_value(
 						cf_stack,
 						context,
 					)
-					.to_string(),
+					.string_content(),
 				);
 				offset += 3
 			}
@@ -662,7 +664,6 @@ fn output_template_value(
 					),
 				};
 
-				const EXAMPLE_DATETIME: &str = "2001-01-19T20:10:01Z";
 				if value.len() != EXAMPLE_DATETIME.len() {
 					panic!("date filter requires valid date format such as {}, but got: {}", EXAMPLE_DATETIME, value)
 				}
@@ -760,11 +761,7 @@ fn fetch_template_value(
 	}
 
 	{
-		let numeric_offset = if name.chars().next() == Some('-') {
-			1
-		} else {
-			0
-		};
+		let numeric_offset = if name.starts_with('-') { 1 } else { 0 };
 		if name[numeric_offset..].chars().all(|c| c.is_digit(10)) {
 			return Value::Integer(name.parse::<i32>().unwrap_or_else(|e| {
 				panic!("Failed converting {} to an i32: {}", name, e)
@@ -1286,7 +1283,8 @@ fn r#else(parameters: &[String], cf_stack: &mut Vec<ControlFlow>) {
 			*condition = !*condition
 		}
 		_ => panic!(
-			"Encountered else without match preceeding if, had {:?} instead."
+			"Encountered else without match preceeding if, had {:?} instead.",
+			cf
 		),
 	}
 }
@@ -1305,7 +1303,8 @@ fn end_if(parameters: &[String], cf_stack: &mut Vec<ControlFlow>) {
 	match cf {
 		ControlFlow::If { .. } => {}
 		_ => panic!(
-			"Encountered endif without match preceeding if, had {:?} instead."
+			"Encountered endif without match preceeding if, had {:?} instead.",
+			cf
 		),
 	}
 }
