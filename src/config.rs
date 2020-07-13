@@ -40,7 +40,9 @@ impl fmt::Display for StringArg {
 }
 
 // Not using the otherwise brilliant CLAP crate since I detest string matching
-// args to get their values.
+// arg names by string across the code to get their values.
+// Could use the structopt crate, but it unfortunately pulls in CLAP and 2 other
+// dependencies (+2 dev-dependencies).
 pub struct Args {
 	pub author: StringArg,
 	pub base_url: StringArg,
@@ -75,8 +77,8 @@ impl Args {
 			},
 			base_url: StringArg {
 				name: "base_url",
-				help: "Set base URL to be used in output files, default is \"http://test.com/\".",
-				value: String::from("http://test.com/"),
+				help: "Set base URL to be used in output files, default is \"http://<host>:<port>/\" but you probably want something like \"http://foo.com/\".",
+				value: String::from("http://127.0.0.1:8090/"),
 				set: false,
 			},
 			email: StringArg {
@@ -218,9 +220,18 @@ impl Args {
 	}
 
 	pub fn values(self) -> Config {
+		let mut base_url = self.base_url.value;
+		if !self.base_url.set {
+			base_url = String::from("http://");
+			base_url.push_str(&self.host.value);
+			base_url.push(':');
+			base_url.push_str(&self.port.value.to_string());
+			base_url.push('/');
+		}
+
 		Config {
 			author: self.author.value,
-			base_url: self.base_url.value,
+			base_url,
 			email: self.email.value,
 			host: self.host.value,
 			input_dir: PathBuf::from(self.input.value),
