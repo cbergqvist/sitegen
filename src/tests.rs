@@ -43,6 +43,7 @@ fn test_liquid_link() {
 	liquid::process(
 		&mut input_file,
 		&mut processed_markdown_content,
+		HashMap::new(),
 		&liquid::Context {
 			input_file_path: &input_file_path,
 			output_file_path: &output_file_path,
@@ -89,6 +90,7 @@ fn test_liquid_unfinished() {
 	liquid::process(
 		&mut input_file,
 		&mut processed_markdown_content,
+		HashMap::new(),
 		&liquid::Context {
 			input_file_path: &input_file_path,
 			output_file_path: &output_file_path,
@@ -115,7 +117,7 @@ fn test_liquid_for() {
 	let front_matter_b = create_front_matter("Title B", None);
 
 	let mut input_file = BufReader::new(Cursor::new(
-		(r#"{% for post in posts %}-{{ post.date }} <a href="{{ post.link }}">{{ post.title }}</a>-{% endfor %}"#).as_bytes(),
+		(r#"{% for post in posts %}-{{ post.date }} <a href="{% link post.link %}">{{ post.title }}</a>-{% endfor %}"#).as_bytes(),
 	));
 
 	let mut input_output_map = HashMap::new();
@@ -138,13 +140,13 @@ fn test_liquid_for() {
 	groups.insert(
 		"posts".to_string(),
 		vec![
-			markdown::OutputFile {
+			markdown::InputFile {
 				front_matter: front_matter_a.clone(),
-				path: output_file_path_a.clone(),
+				path: input_file_path_a.clone(),
 			},
-			markdown::OutputFile {
+			markdown::InputFile {
 				front_matter: front_matter_b.clone(),
-				path: output_file_path_b.clone(),
+				path: input_file_path_b.clone(),
 			},
 		],
 	);
@@ -153,6 +155,7 @@ fn test_liquid_for() {
 	liquid::process(
 		&mut input_file,
 		&mut processed_markdown_content,
+		HashMap::new(),
 		&liquid::Context {
 			input_file_path: &input_file_path_a,
 			output_file_path: &output_file_path_a,
@@ -198,6 +201,7 @@ fn test_liquid_date() {
 	liquid::process(
 		&mut input_file,
 		&mut processed_markdown_content,
+		HashMap::new(),
 		&liquid::Context {
 			input_file_path: &input_file_path,
 			output_file_path: &output_file_path,
@@ -241,6 +245,7 @@ fn test_liquid_upcase() {
 	liquid::process(
 		&mut input_file,
 		&mut processed_markdown_content,
+		HashMap::new(),
 		&liquid::Context {
 			input_file_path: &input_file_path,
 			output_file_path: &output_file_path,
@@ -284,6 +289,7 @@ fn test_liquid_upcase_downcase() {
 	liquid::process(
 		&mut input_file,
 		&mut processed_markdown_content,
+		HashMap::new(),
 		&liquid::Context {
 			input_file_path: &input_file_path,
 			output_file_path: &output_file_path,
@@ -330,6 +336,7 @@ These shoes are awesome!
 	liquid::process(
 		&mut input_file,
 		&mut processed_markdown_content,
+		HashMap::new(),
 		&liquid::Context {
 			input_file_path: &input_file_path,
 			output_file_path: &output_file_path,
@@ -374,6 +381,7 @@ fn test_liquid_assign() {
 	liquid::process(
 		&mut input_file,
 		&mut processed_markdown_content,
+		HashMap::new(),
 		&liquid::Context {
 			input_file_path: &input_file_path,
 			output_file_path: &output_file_path,

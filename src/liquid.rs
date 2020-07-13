@@ -8,8 +8,8 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
 use crate::front_matter::FrontMatter;
-use crate::markdown::{OptionOutputFile, OutputFile};
-use crate::util::write_to_stream;
+use crate::markdown::{InputFile, OptionOutputFile};
+use crate::util::{strip_prefix, write_to_stream};
 
 pub struct Context<'a> {
 	pub input_file_path: &'a PathBuf,
@@ -19,7 +19,7 @@ pub struct Context<'a> {
 	pub root_input_dir: &'a PathBuf,
 	pub root_output_dir: &'a PathBuf,
 	pub input_output_map: &'a HashMap<PathBuf, OptionOutputFile>,
-	pub groups: &'a HashMap<String, Vec<OutputFile>>,
+	pub groups: &'a HashMap<String, Vec<InputFile>>,
 }
 
 #[derive(Clone)]
@@ -29,7 +29,7 @@ struct Position {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-enum Value {
+pub enum Value {
 	Boolean(bool),
 	String(String),
 	Integer(i32),
@@ -116,6 +116,7 @@ impl ControlFlow {
 pub fn process<T: Read + Seek>(
 	input_file: &mut BufReader<T>,
 	mut parent_output_buf: &mut BufWriter<Vec<u8>>,
+	mut outer_variables: HashMap<String, Value>,
 	context: &Context,
 ) {
 	#[derive(Debug)]
@@ -149,7 +150,6 @@ pub fn process<T: Read + Seek>(
 	let mut parsing_literal = false;
 	let mut queued_identifiers: Vec<String> = Vec::new();
 	let mut cf_stack: Vec<ControlFlow> = Vec::new();
-	let mut outer_variables: HashMap<String, Value> = HashMap::new();
 	let mut capture_buf = BufWriter::new(Vec::new());
 
 	loop {
@@ -961,14 +961,12 @@ fn fetch_value(
 						.map_or_else(String::new, String::clone),
 				),
 			);
-			map.insert(
-				"link",
-				Value::String(make_relative_link(
-					context.output_file_path,
-					&entry.path,
-					context.root_output_dir,
-				)),
+			let mut link = String::from("/");
+			link.push_str(
+				&strip_prefix(&entry.path, context.root_input_dir)
+					.to_string_lossy(),
 			);
+			map.insert("link", Value::String(link));
 
 			result.push(Value::Dictionary { map })
 		}
@@ -1034,9 +1032,14 @@ fn run_function<T: Read + Seek>(
 			context,
 		),
 		"endfor" => end_for(input_file, parameters, cf_stack),
-		"include" => {
-			include_file(&mut output_buf, parameters, skipping, context)
-		}
+		"include" => include_file(
+			&mut output_buf,
+			parameters,
+			outer_variables,
+			cf_stack,
+			skipping,
+			context,
+		),
 		"link" => check_and_emit_link(
 			context.output_file_path,
 			&mut output_buf,
@@ -1446,6 +1449,8 @@ fn end_for<T: Read + Seek>(
 fn include_file(
 	mut output_buf: &mut BufWriter<Vec<u8>>,
 	parameters: &[String],
+	outer_variables: &mut HashMap<String, Value>,
+	cf_stack: &mut Vec<ControlFlow>,
 	skipping: bool,
 	context: &Context,
 ) {
@@ -1478,9 +1483,25 @@ fn include_file(
 		context.input_file_path.display()
 	);
 
+	let mut outer_variables_for_include = outer_variables.clone();
+	for cf in cf_stack {
+		match cf {
+			ControlFlow::For {
+				local_variables, ..
+			} => {
+				for (name, value) in local_variables {
+					outer_variables_for_include
+						.insert(name.clone(), value.clone());
+				}
+			}
+			ControlFlow::If { .. } | ControlFlow::Capture { .. } => {}
+		}
+	}
+
 	process(
 		&mut included_file,
 		&mut output_buf,
+		outer_variables_for_include,
 		&Context {
 			input_file_path: &included_file_path,
 			..*context
@@ -1525,8 +1546,9 @@ fn check_and_emit_link(
 	let append_index_html = parameter.ends_with('/');
 	if !parameter.starts_with('/') {
 		panic!(
-			"Only absolute paths are allowed in links, but got: {}",
-			parameter
+			"Only absolute paths are allowed in links, but got: {} (file: {})",
+			parameter,
+			context.input_file_path.display()
 		);
 	}
 	let mut path = context.root_input_dir.join(PathBuf::from(&parameter[1..]));

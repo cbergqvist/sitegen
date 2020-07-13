@@ -1,4 +1,4 @@
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::{hash_map::Entry, BTreeMap, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -21,7 +21,7 @@ mod websocket;
 #[cfg(test)]
 mod tests;
 
-use markdown::{GroupedOutputFile, OptionOutputFile, OutputFile};
+use markdown::{GroupedOutputFile, InputFile, OptionOutputFile};
 use util::{strip_prefix, write_to_stream, write_to_stream_log_count, Refresh};
 
 enum ReadResult {
@@ -78,13 +78,13 @@ fn inner_main(config: &config::Config) {
 			)
 		});
 
-		let (i_o_map, g_map) = build_initial_input_output_map(
+		let fs = build_initial_fileset(
 			&input_files,
 			&config.input_dir,
 			&config.output_dir,
 		);
-		input_output_map = i_o_map;
-		groups = g_map;
+		input_output_map = fs.input_output_map;
+		groups = fs.groups;
 
 		let feed_groups = process_initial_files(
 			&input_files,
@@ -92,6 +92,7 @@ fn inner_main(config: &config::Config) {
 			&config.output_dir,
 			&input_output_map,
 			&groups,
+			&fs.tags,
 		);
 
 		atom::generate(
@@ -155,16 +156,22 @@ fn inner_main(config: &config::Config) {
 	);
 }
 
-fn build_initial_input_output_map(
+struct InitialFileSet {
+	input_output_map: HashMap<PathBuf, OptionOutputFile>,
+	groups: HashMap<String, Vec<InputFile>>,
+	tags: HashMap<String, Vec<InputFile>>,
+}
+
+fn build_initial_fileset(
 	input_files: &markdown::InputFileCollection,
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
-) -> (
-	HashMap<PathBuf, OptionOutputFile>,
-	HashMap<String, Vec<OutputFile>>,
-) {
-	let mut input_output_map = HashMap::new();
-	let mut groups = HashMap::new();
+) -> InitialFileSet {
+	let mut result = InitialFileSet {
+		input_output_map: HashMap::new(),
+		groups: HashMap::new(),
+		tags: HashMap::new(),
+	};
 
 	// First, build up the input -> output map so that later when we do
 	// actual processing of files, we have records of all other files.
@@ -179,8 +186,9 @@ fn build_initial_input_output_map(
 				file: output_file.file.convert_to_option(),
 				group: output_file.group,
 			},
-			&mut input_output_map,
-			Some(&mut groups),
+			&mut result.input_output_map,
+			Some(&mut result.groups),
+			Some(&mut result.tags),
 		)
 	}
 	for file_name in &input_files.markdown {
@@ -193,8 +201,9 @@ fn build_initial_input_output_map(
 				file: output_file.file.convert_to_option(),
 				group: output_file.group,
 			},
-			&mut input_output_map,
-			Some(&mut groups),
+			&mut result.input_output_map,
+			Some(&mut result.groups),
+			Some(&mut result.tags),
 		)
 	}
 	for file_name in &input_files.raw {
@@ -209,21 +218,27 @@ fn build_initial_input_output_map(
 				},
 				group: None,
 			},
-			&mut input_output_map,
-			Some(&mut groups),
+			&mut result.input_output_map,
+			Some(&mut result.groups),
+			Some(&mut result.tags),
 		)
 	}
 
-	for entries in groups.values_mut() {
-		// Use stable sort in attempt to stay relatively deterministic, even
-		// though we are still relying on the file system to give us files with
-		// exactly equal front matter dates in the same order.
+	// Use stable sort in attempt to stay relatively deterministic, even
+	// though we are still relying on the file system to give us files with
+	// exactly equal front matter dates in the same order.
+	for entries in result.groups.values_mut() {
+		entries.sort_by(|lhs, rhs| {
+			return rhs.front_matter.date.cmp(&lhs.front_matter.date);
+		})
+	}
+	for entries in result.tags.values_mut() {
 		entries.sort_by(|lhs, rhs| {
 			return rhs.front_matter.date.cmp(&lhs.front_matter.date);
 		})
 	}
 
-	for group in groups.keys() {
+	for group in result.groups.keys() {
 		let xml_file = PathBuf::from("feeds")
 			.join(group)
 			.with_extension(util::XML_EXTENSION);
@@ -236,12 +251,42 @@ fn build_initial_input_output_map(
 				},
 				group: None,
 			},
-			&mut input_output_map,
+			&mut result.input_output_map,
+			None,
+			Some(&mut result.tags),
+		)
+	}
+
+	for tag in result.tags.keys() {
+		let tags_file = PathBuf::from("tags")
+			.join(&tag)
+			.with_extension(util::HTML_EXTENSION);
+		checked_insert(
+			input_dir.join(&tags_file), // virtual input
+			GroupedOutputFile {
+				file: OptionOutputFile {
+					path: output_dir.join(tags_file),
+					front_matter: Some(front_matter::FrontMatter {
+						title: format!("Tag: {}", tag),
+						date: None,
+						published: true,
+						edited: None,
+						categories: Vec::new(),
+						tags: Vec::new(),
+						layout: None,
+						custom_attributes: BTreeMap::new(),
+						end_position: 0,
+					}),
+				},
+				group: None,
+			},
+			&mut result.input_output_map,
+			Some(&mut result.groups),
 			None,
 		)
 	}
 
-	(input_output_map, groups)
+	result
 }
 
 fn process_initial_files(
@@ -249,7 +294,8 @@ fn process_initial_files(
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
 	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
-	groups: &HashMap<String, Vec<OutputFile>>,
+	groups: &HashMap<String, Vec<InputFile>>,
+	tags: &HashMap<String, Vec<InputFile>>,
 ) -> HashMap<String, Vec<atom::FeedEntry>> {
 	let mut feed_map = HashMap::new();
 
@@ -286,6 +332,21 @@ fn process_initial_files(
 		}
 	}
 
+	for (tag, entries) in tags {
+		let tags_file = PathBuf::from("tags")
+			.join(&tag)
+			.with_extension(util::HTML_EXTENSION);
+
+		markdown::generate_tag_file(
+			&input_dir.join(tags_file),
+			entries,
+			input_dir,
+			output_dir,
+			input_output_map,
+			groups,
+		)
+	}
+
 	feed_map
 }
 
@@ -293,9 +354,10 @@ fn checked_insert(
 	key: PathBuf,
 	value: GroupedOutputFile,
 	path_map: &mut HashMap<PathBuf, OptionOutputFile>,
-	group_map: Option<&mut HashMap<String, Vec<OutputFile>>>,
+	group_map: Option<&mut HashMap<String, Vec<InputFile>>>,
+	tags_map: Option<&mut HashMap<String, Vec<InputFile>>>,
 ) {
-	match path_map.entry(key) {
+	match path_map.entry(key.clone()) {
 		Entry::Occupied(oe) => {
 			panic!(
 				"Key {} already had value: {}, when trying to insert: {}",
@@ -314,15 +376,31 @@ fn checked_insert(
 				return;
 			}
 
+			let path = value.file.path;
+			let front_matter = &value.file.front_matter
+						.unwrap_or_else(|| panic!("Expect front matter for grouped files, but didn't get one for {}.", path.display()));
 			if let Some(group_map) = group_map {
 				if let Some(group) = value.group {
-					let path = value.file.path;
-					let file = OutputFile {
-						front_matter: value.file.front_matter
-							.unwrap_or_else(|| panic!("Expect front matter for grouped files, but didn't get one for {}.", path.display())),
-						path,
+					let file = InputFile {
+						front_matter: front_matter.clone(),
+						path: key.clone(),
 					};
 					match group_map.entry(group) {
+						Entry::Vacant(ve) => {
+							ve.insert(vec![file]);
+						}
+						Entry::Occupied(oe) => oe.into_mut().push(file),
+					}
+				}
+			}
+
+			if let Some(tags_map) = tags_map {
+				for tag in &front_matter.tags {
+					let file = InputFile {
+						front_matter: front_matter.clone(),
+						path: key.clone(),
+					};
+					match tags_map.entry(tag.clone()) {
 						Entry::Vacant(ve) => {
 							ve.insert(vec![file]);
 						}
@@ -347,6 +425,8 @@ fn find_newest_file(
 		OsStr::new(util::MARKDOWN_EXTENSION),
 	];
 
+	let excluded_folder = input_dir.join("tags");
+
 	for (input_file, output_file) in input_output_map {
 		let extension = if let Some(e) = input_file.extension() {
 			e
@@ -354,7 +434,9 @@ fn find_newest_file(
 			continue;
 		};
 
-		if !supported_extensions.iter().any(|e| e == &extension) {
+		if !supported_extensions.iter().any(|e| e == &extension)
+			|| input_file.starts_with(&excluded_folder)
+		{
 			continue;
 		}
 
@@ -447,7 +529,7 @@ fn watch_fs(
 	output_dir: &PathBuf,
 	fs_cond: &Arc<(Mutex<Refresh>, Condvar)>,
 	mut input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
-	groups: &mut HashMap<String, Vec<OutputFile>>,
+	groups: &mut HashMap<String, Vec<InputFile>>,
 ) -> ! {
 	let (tx, rx) = channel();
 	let mut watcher =
@@ -506,7 +588,7 @@ fn get_path_to_refresh(
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
 	input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
-	groups: &mut HashMap<String, Vec<OutputFile>>,
+	groups: &mut HashMap<String, Vec<InputFile>>,
 ) -> Option<String> {
 	let css_extension = OsStr::new(util::CSS_EXTENSION);
 	let html_extension = OsStr::new(util::HTML_EXTENSION);
@@ -593,7 +675,7 @@ fn handle_html_updated(
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
 	input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
-	groups: &mut HashMap<String, Vec<OutputFile>>,
+	groups: &mut HashMap<String, Vec<InputFile>>,
 ) -> Option<String> {
 	let parent_path = input_file_path.parent().unwrap_or_else(|| {
 		panic!(

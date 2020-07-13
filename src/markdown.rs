@@ -40,6 +40,11 @@ pub struct OutputFile {
 	pub path: PathBuf,
 }
 
+pub struct InputFile {
+	pub front_matter: FrontMatter,
+	pub path: PathBuf,
+}
+
 #[derive(Clone)]
 pub struct OptionOutputFile {
 	pub front_matter: Option<FrontMatter>,
@@ -183,7 +188,7 @@ pub fn process_file(
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
 	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
-	groups: &HashMap<String, Vec<OutputFile>>,
+	groups: &HashMap<String, Vec<InputFile>>,
 ) -> GeneratedFile {
 	assert_eq!(
 		input_file_path.extension(),
@@ -224,6 +229,7 @@ pub fn process_file(
 	liquid::process(
 		&mut input_file,
 		&mut processed_markdown_content,
+		HashMap::new(),
 		&liquid::Context {
 			input_file_path,
 			output_file_path: &output_file_path,
@@ -263,6 +269,7 @@ pub fn process_file(
 	liquid::process(
 		&mut template_file,
 		&mut output_buf,
+		HashMap::new(),
 		&liquid::Context {
 			input_file_path: &template_path_result.path,
 			output_file_path: &output_file_path,
@@ -300,7 +307,7 @@ pub fn reprocess_file(
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
 	input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
-	groups: &mut HashMap<String, Vec<OutputFile>>,
+	groups: &mut HashMap<String, Vec<InputFile>>,
 ) -> GeneratedFile {
 	assert_eq!(
 		input_file_path.extension(),
@@ -320,17 +327,23 @@ pub fn reprocess_file(
 
 	// TODO: Remove from previous group, if changing groups.
 	if let Some(group) = grouped_file.group {
-		let file = output_file.clone();
+		let input_file_rec = InputFile {
+			path: input_file_path.clone(),
+			front_matter: output_file.front_matter.clone(),
+		};
+
 		match groups.entry(group) {
 			Entry::Vacant(ve) => {
-				ve.insert(vec![file]);
+				ve.insert(vec![input_file_rec]);
 			}
 			Entry::Occupied(oe) => {
 				let v = oe.into_mut();
-				if let Some(e) = v.iter_mut().find(|f| f.path == file.path) {
-					*e = file
+				if let Some(e) =
+					v.iter_mut().find(|f| f.path == input_file_rec.path)
+				{
+					*e = input_file_rec
 				} else {
-					v.push(file)
+					v.push(input_file_rec)
 				}
 			}
 		}
@@ -354,6 +367,7 @@ pub fn reprocess_file(
 	liquid::process(
 		&mut input_file,
 		&mut processed_markdown_content,
+		HashMap::new(),
 		&liquid::Context {
 			input_file_path,
 			output_file_path: &output_file_path,
@@ -393,6 +407,7 @@ pub fn reprocess_file(
 	liquid::process(
 		&mut template_file,
 		&mut output_buf,
+		HashMap::new(),
 		&liquid::Context {
 			input_file_path: &template_path_result.path,
 			output_file_path: &output_file_path,
@@ -430,7 +445,7 @@ pub fn process_template_file(
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
 	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
-	groups: &HashMap<String, Vec<OutputFile>>,
+	groups: &HashMap<String, Vec<InputFile>>,
 ) {
 	assert_eq!(
 		input_file_path.extension(),
@@ -471,6 +486,7 @@ pub fn process_template_file(
 	liquid::process(
 		&mut input_file,
 		&mut output_buf,
+		HashMap::new(),
 		&liquid::Context {
 			input_file_path,
 			output_file_path,
@@ -498,7 +514,7 @@ pub fn reprocess_template_file(
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
 	input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
-	groups: &mut HashMap<String, Vec<OutputFile>>,
+	groups: &mut HashMap<String, Vec<InputFile>>,
 ) -> PathBuf {
 	assert_eq!(
 		input_file_path.extension(),
@@ -534,6 +550,7 @@ pub fn reprocess_template_file(
 	liquid::process(
 		&mut input_file,
 		&mut output_buf,
+		HashMap::new(),
 		&liquid::Context {
 			input_file_path,
 			output_file_path: &output_file_path,
@@ -556,6 +573,93 @@ pub fn reprocess_template_file(
 	);
 
 	strip_prefix(&output_file_path, root_output_dir)
+}
+
+pub fn generate_tag_file(
+	input_file_path: &PathBuf,
+	entries: &Vec<InputFile>,
+	root_input_dir: &PathBuf,
+	root_output_dir: &PathBuf,
+	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
+	groups: &HashMap<String, Vec<InputFile>>,
+) {
+	assert_eq!(
+		input_file_path.extension(),
+		Some(OsStr::new(util::HTML_EXTENSION))
+	);
+
+	let timer = Instant::now();
+
+	let output_file =
+		input_output_map.get(input_file_path).unwrap_or_else(|| {
+			panic!(
+				"Failed finding {} in {:?}",
+				input_file_path.display(),
+				input_output_map.keys()
+			)
+		});
+
+	let template_file = root_input_dir.join("_layouts/tag.html");
+	let mut input_file =
+		BufReader::new(fs::File::open(&template_file).unwrap_or_else(|e| {
+			panic!("Failed opening \"{}\": {}.", &template_file.display(), e)
+		}));
+
+	let output_file_path = &output_file.path;
+	let front_matter = output_file.front_matter.as_ref().unwrap_or_else(|| {
+		panic!(
+			"Expecting at least a default FrontMatter instance on file: {}",
+			output_file_path.display()
+		)
+	});
+
+	let mut output_buf = BufWriter::new(Vec::new());
+
+	let mut entries_as_values = Vec::new();
+	for entry in entries {
+		let mut map = HashMap::new();
+		let mut link = String::from("/");
+		link.push_str(
+			&strip_prefix(&entry.path, root_input_dir).to_string_lossy(),
+		);
+		map.insert("link", liquid::Value::String(link));
+		map.insert(
+			"title",
+			liquid::Value::String(entry.front_matter.title.clone()),
+		);
+		entries_as_values.push(liquid::Value::Dictionary { map });
+	}
+	let mut outer_variables = HashMap::new();
+	outer_variables.insert(
+		"entries".to_string(),
+		liquid::Value::List {
+			values: entries_as_values,
+		},
+	);
+
+	liquid::process(
+		&mut input_file,
+		&mut output_buf,
+		outer_variables,
+		&liquid::Context {
+			input_file_path: &template_file,
+			output_file_path,
+			front_matter,
+			html_content: None,
+			root_input_dir,
+			root_output_dir,
+			input_output_map,
+			groups,
+		},
+	);
+
+	write_buffer_to_file(output_buf.buffer(), &output_file_path);
+
+	println!(
+		"Generated tags file {} in {} ms.",
+		output_file_path.display(),
+		timer.elapsed().as_millis(),
+	);
 }
 
 fn write_buffer_to_file(buffer: &[u8], path: &PathBuf) {
