@@ -376,11 +376,29 @@ pub fn process<T: Read + Seek>(
 					&position,
 					context,
 				),
-				Char::Newline => panic_at_location(
-					"Unexpected newline in the middle of function name.",
-					&position,
-					context,
-				),
+				Char::Newline => {
+					assert!(!current_identifier.is_empty());
+					assert_eq!(queued_identifiers.len(), 0);
+					let function = String::from_utf8_lossy(&current_identifier);
+					let parameters = &queued_identifiers;
+
+					run_function(
+						input_file,
+						&mut output_buf,
+						&function,
+						parameters,
+						&mut outer_variables,
+						&mut cf_stack,
+						skipping,
+						context,
+					);
+
+					current_identifier.clear();
+					assert!(!parsing_literal);
+					assert_eq!(queued_identifiers.len(), 0);
+
+					state = State::TagEnd
+				},
 				Char::Quote => panic_at_location(
 					"Unexpected quote (\") in the middle of function name.",
 					&position,
@@ -408,7 +426,7 @@ pub fn process<T: Read + Seek>(
 					&position,
 					context,
 				),
-				Char::Percent | Char::Newline => {
+				Char::Newline => {
 					assert!(current_identifier.is_empty());
 					let function = &queued_identifiers[0];
 					let parameters = &queued_identifiers[1..];
@@ -428,11 +446,41 @@ pub fn process<T: Read + Seek>(
 					assert!(!parsing_literal);
 					queued_identifiers.clear();
 
-					state = match c {
-						Char::Percent => State::WaitingForCloseBracket,
-						Char::Newline => State::TagEnd,
-						_ => panic!("WTF?"),
-					}
+					state = State::TagEnd
+				}
+				Char::Percent => {
+					assert!(current_identifier.is_empty());
+					let function = &queued_identifiers[0];
+					let parameters = &queued_identifiers[1..];
+
+					let before_function_pos = input_file.seek(SeekFrom::Current(0)).unwrap_or_else(|e|
+						panic!("Failed querying current stream position: {}", e));
+
+					run_function(
+						input_file,
+						&mut output_buf,
+						function,
+						parameters,
+						&mut outer_variables,
+						&mut cf_stack,
+						skipping,
+						context,
+					);
+
+					current_identifier.clear();
+					assert!(!parsing_literal);
+					queued_identifiers.clear();
+
+					let end_function_pos = input_file.seek(SeekFrom::Current(0)).unwrap_or_else(|e|
+						panic!("Failed querying current stream position: {}", e));
+					state = if before_function_pos == end_function_pos {
+						State::WaitingForCloseBracket
+					} else {
+						// Running the function may have caused us to seek back
+						// in the stream to a prior tag (from after an endfor to
+						// after a for).
+						State::TagEnd
+					};
 				}
 				Char::Quote => {
 					current_identifier.push(byte);
@@ -495,7 +543,7 @@ pub fn process<T: Read + Seek>(
 						current_identifier.clear();
 						queued_identifiers.clear();
 
-						state = State::WaitingForCloseBracket
+						state = State::TagEnd
 					}
 					Char::Quote => panic_at_location(
 						"Unexpected quote (\") in the middle of non-literal.",
@@ -563,6 +611,7 @@ pub fn process<T: Read + Seek>(
 			}
 		}
 
+		// This does not account for back-seeks due to for loops.
 		match c {
 			Char::Newline => {
 				position.line += 1;
@@ -1379,20 +1428,21 @@ fn start_for<T: Read + Seek>(
 		local_variables.insert(variable.clone(), loop_values[0].clone());
 	}
 
+	// Store position to seek back to as right before (-1) the character that
+	// started the ending of the current for-tag so that it gets re-read when
+	// seeking back, making the state machine function properly.
+	let buffer_start_position =
+		input_file.seek(SeekFrom::Current(0)).unwrap_or_else(|e| {
+			panic!("Failed fetching current position from input stream: {}", e)
+		}) - 1;
+
 	cf_stack.push(ControlFlow::For {
 		end,
 		local_variables,
 		values: loop_values,
 		variable: variable.clone(),
 		index: 0,
-		buffer_start_position: input_file
-			.seek(SeekFrom::Current(0))
-			.unwrap_or_else(|e| {
-				panic!(
-					"Failed fetching current position from input stream: {}",
-					e
-				)
-			}),
+		buffer_start_position,
 	})
 }
 
