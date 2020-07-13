@@ -627,6 +627,16 @@ pub fn generate_tag_file(
 			"title",
 			liquid::Value::String(entry.front_matter.title.clone()),
 		);
+		map.insert(
+			"date",
+			liquid::Value::String(
+				entry
+					.front_matter
+					.date
+					.as_ref()
+					.map_or_else(String::new, String::clone),
+			),
+		);
 		entries_as_values.push(liquid::Value::Dictionary { map });
 	}
 	let mut outer_variables = HashMap::new();
