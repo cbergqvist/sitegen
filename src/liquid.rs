@@ -108,8 +108,6 @@ impl ControlFlow {
 	}
 }
 
-const EXAMPLE_DATETIME: &str = "2001-01-19T20:10:01Z";
-
 // Rolling a simple version of Liquid parsing on my own since the official Rust
 // one has too many dependencies.
 //
@@ -652,6 +650,8 @@ fn output_template_value(
 	cf_stack: &[ControlFlow],
 	context: &Context,
 ) {
+	const EXAMPLE_DATETIME: &str = "2001-01-19T20:10:01Z";
+
 	if identifiers.is_empty() {
 		panic!("Encountered empty template value section, missing name.")
 	}

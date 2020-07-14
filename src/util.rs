@@ -2,9 +2,13 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
+pub const ASCII_EXTENSION: &str = "asc";
 pub const CSS_EXTENSION: &str = "css";
+pub const GIF_EXTENSION: &str = "gif";
 pub const HTML_EXTENSION: &str = "html";
+pub const JPG_EXTENSION: &str = "jpg";
 pub const MARKDOWN_EXTENSION: &str = "md";
+pub const PNG_EXTENSION: &str = "png";
 pub const XML_EXTENSION: &str = "xml";
 
 // Special identifier making JavaScript reload the current page.
@@ -40,7 +44,20 @@ pub fn copy_files_with_prefix(
 		}
 	}
 	for file_name in files {
-		let target = output_dir.join(strip_prefix(file_name, &input_prefix));
+		let target =
+			translate_input_to_output(file_name, &input_prefix, output_dir);
+		let target_parent = target.parent().unwrap_or_else(|| {
+			panic!("Failed fetching parent from {}.", target.display())
+		});
+		if !target_parent.exists() {
+			fs::create_dir_all(target_parent).unwrap_or_else(|e| {
+				panic!(
+					"Failed creating directories in {}: {}",
+					target_parent.display(),
+					e
+				)
+			});
+		}
 		fs::copy(file_name, &target).unwrap_or_else(|e| {
 			panic!(
 				"Failed copying {} to {}: {}",
@@ -50,6 +67,23 @@ pub fn copy_files_with_prefix(
 			)
 		});
 	}
+}
+
+pub fn translate_input_to_output(
+	path: &PathBuf,
+	input_dir: &PathBuf,
+	output_dir: &PathBuf,
+) -> PathBuf {
+	let mut without_prefix = strip_prefix(path, input_dir);
+	if without_prefix.components().next()
+		== Some(std::path::Component::Normal(std::ffi::OsStr::new(
+			"_static",
+		))) {
+		without_prefix =
+			PathBuf::from(&((*without_prefix.to_string_lossy())[1..]));
+	}
+
+	output_dir.join(without_prefix)
 }
 
 pub fn strip_prefix(path: &PathBuf, prefix: &PathBuf) -> PathBuf {

@@ -22,7 +22,10 @@ mod websocket;
 mod tests;
 
 use markdown::{GroupedOutputFile, InputFile, OptionOutputFile};
-use util::{strip_prefix, write_to_stream, write_to_stream_log_count, Refresh};
+use util::{
+	strip_prefix, translate_input_to_output, write_to_stream,
+	write_to_stream_log_count, Refresh,
+};
 
 enum ReadResult {
 	GetRequest(PathBuf),
@@ -185,13 +188,13 @@ fn build_initial_fileset(
 		)
 	}
 	for file_name in &input_files.raw {
-		let output_file_path =
-			output_dir.join(strip_prefix(file_name, input_dir));
 		checked_insert(
 			file_name,
 			GroupedOutputFile {
 				file: OptionOutputFile {
-					path: output_file_path,
+					path: translate_input_to_output(
+						file_name, input_dir, output_dir,
+					),
 					front_matter: None,
 				},
 				group: None,
@@ -678,10 +681,12 @@ fn get_path_to_refresh(
 		match input_output_map.entry(input_file_path.clone()) {
 			Entry::Occupied(..) => {}
 			Entry::Vacant(ve) => {
-				let output_file_path =
-					output_dir.join(strip_prefix(input_file_path, input_dir));
 				ve.insert(OptionOutputFile {
-					path: output_file_path,
+					path: translate_input_to_output(
+						input_file_path,
+						input_dir,
+						output_dir,
+					),
 					front_matter: None,
 				});
 			}
@@ -932,11 +937,18 @@ fn handle_write(
 	root_dir: &PathBuf,
 	start_file: Option<PathBuf>,
 ) {
-	const TEXT_OUTPUT_EXTENSIONS: [&str; 3] = [
-		util::HTML_EXTENSION,
+	const TEXT_OUTPUT_EXTENSIONS: [&str; 4] = [
+		util::ASCII_EXTENSION,
 		util::CSS_EXTENSION,
+		util::HTML_EXTENSION,
 		util::XML_EXTENSION,
 	];
+	const IMAGE_OUTPUT_EXTENSIONS: [&str; 3] = [
+		util::GIF_EXTENSION,
+		util::JPG_EXTENSION,
+		util::PNG_EXTENSION,
+	];
+
 	if path.to_string_lossy() == "dev" {
 		println!("Requested path is not a file, returning index.");
 		let iframe_src = if let Some(path) = start_file {
@@ -984,32 +996,47 @@ fn handle_write(
 
 	if let Some(extension) = full_path.extension() {
 		let extension = extension.to_string_lossy();
-		if TEXT_OUTPUT_EXTENSIONS.iter().any(|&ext| ext == extension) {
-			write_to_stream_log_count(format!("HTTP/1.1 200 OK\r\nContent-Type: text/{}; charset=UTF-8\r\n\r\n", extension).as_bytes(), &mut stream);
-			let mut buf = [0_u8; 64 * 1024];
-			loop {
-				let size = input_file.read(&mut buf).unwrap_or_else(|e| {
-					panic!(
-						"Failed reading from {}: {}",
-						full_path.display(),
-						e
-					);
-				});
-				if size < 1 {
-					break;
-				}
-
-				write_to_stream_log_count(&buf[0..size], &mut stream);
-			}
+		let content_type = if TEXT_OUTPUT_EXTENSIONS
+			.iter()
+			.any(|&ext| ext == extension)
+		{
+			format!("text/{}", extension)
+		} else if IMAGE_OUTPUT_EXTENSIONS.iter().any(|&ext| ext == extension) {
+			format!("image/{}", extension)
 		} else {
+			let message =
+				format!("Unrecognized extension: {}", full_path.display());
+			println!("Responding with HTTP 500 error: {}", message);
 			write_to_stream_log_count(
-				format!("HTTP/1.1 500 Error\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>Unrecognized extension: {}</body></html>\r\n", full_path.display()).as_bytes(),
+				format!("HTTP/1.1 500 Error\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>{}</body></html>\r\n", message).as_bytes(),
 				&mut stream,
+			);
+			return;
+		};
+		write_to_stream_log_count(
+			format!(
+				"HTTP/1.1 200 OK\r\nContent-Type: {}; charset=UTF-8\r\n\r\n",
+				content_type
 			)
+			.as_bytes(),
+			&mut stream,
+		);
+		let mut buf = [0_u8; 64 * 1024];
+		loop {
+			let size = input_file.read(&mut buf).unwrap_or_else(|e| {
+				panic!("Failed reading from {}: {}", full_path.display(), e);
+			});
+			if size < 1 {
+				break;
+			}
+
+			write_to_stream_log_count(&buf[0..size], &mut stream);
 		}
 	} else {
+		let message = format!("Missing extension: {}", full_path.display());
+		println!("Responding with HTTP 500 error: {}", message);
 		write_to_stream_log_count(
-			format!("HTTP/1.1 500 Error\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>Missing extension: {}</body></html>\r\n", full_path.display()).as_bytes(),
+			format!("HTTP/1.1 500 Error\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html><body>{}</body></html>\r\n", message).as_bytes(),
 			&mut stream,
 		)
 	}

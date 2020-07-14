@@ -93,7 +93,17 @@ impl InputFileCollection {
 	}
 }
 
+enum Dir {
+	Root,
+	SubDir,
+	SubDirStatic,
+}
+
 pub fn get_files(input_dir: &PathBuf) -> InputFileCollection {
+	get_files_recursively(input_dir, Dir::Root)
+}
+
+fn get_files_recursively(input_dir: &PathBuf, dir: Dir) -> InputFileCollection {
 	let css_extension = OsStr::new(util::CSS_EXTENSION);
 	let html_extension = OsStr::new(util::HTML_EXTENSION);
 	let markdown_extension = OsStr::new(util::MARKDOWN_EXTENSION);
@@ -107,76 +117,107 @@ pub fn get_files(input_dir: &PathBuf) -> InputFileCollection {
 	});
 	let mut result = InputFileCollection::new();
 	for entry in entries {
-		match entry {
-			Ok(entry) => {
-				let path = entry.path();
-				if let Ok(ft) = entry.file_type() {
-					if ft.is_file() {
-						if let Some(extension) = path.extension() {
-							let recognized = || {
-								println!(
-									"File with recognized extension: \"{}\"",
-									entry.path().display()
-								)
-							};
-							if extension == html_extension {
-								result.html.push(path);
-								recognized();
-							} else if extension == markdown_extension {
-								result.markdown.push(path);
-								recognized();
-							} else if extension == css_extension {
-								result.raw.push(path);
-								recognized();
-							} else {
-								println!(
-									"Skipping file with unrecognized extension ({}) file: \"{}\"",
-									extension.to_string_lossy(),
-									entry.path().display()
-								);
-							}
+		let entry = entry.unwrap_or_else(|e| {
+			panic!("Invalid entry in \"{}\": {}", input_dir.display(), e)
+		});
+
+		let path = entry.path();
+		let ft = entry.file_type().unwrap_or_else(|e| {
+			panic!(
+				"Failed getting file type of {}: {}",
+				entry.path().display(),
+				e
+			)
+		});
+
+		if ft.is_file() {
+			match dir {
+				Dir::SubDirStatic => {
+					println!(
+						"Adding file from static directory: {}",
+						path.display()
+					);
+					result.raw.push(path)
+				}
+				Dir::Root | Dir::SubDir => {
+					if let Some(extension) = path.extension() {
+						let recognized = || {
+							println!(
+								"File with recognized extension: \"{}\"",
+								entry.path().display()
+							)
+						};
+						if extension == html_extension {
+							result.html.push(path);
+							recognized();
+						} else if extension == markdown_extension {
+							result.markdown.push(path);
+							recognized();
+						} else if extension == css_extension {
+							result.raw.push(path);
+							recognized();
 						} else {
 							println!(
-								"Skipping extension-less file: \"{}\"",
+								"Skipping file with unrecognized extension ({}) file: \"{}\"",
+								extension.to_string_lossy(),
 								entry.path().display()
 							);
 						}
-					} else if ft.is_dir() {
-						let file_name = path.file_name().unwrap_or_else(|| {
+					} else {
+						println!(
+							"Skipping extension-less file: \"{}\"",
+							entry.path().display()
+						);
+					}
+				}
+			}
+		} else if ft.is_dir() {
+			match dir {
+				Dir::SubDirStatic => {
+					let mut subdir_files =
+						self::get_files_recursively(&path, Dir::SubDirStatic);
+					result.append(&mut subdir_files);
+				}
+				Dir::Root | Dir::SubDir => {
+					let file_name = path
+						.file_name()
+						.unwrap_or_else(|| {
 							panic!(
 								"Directory without filename?: {}",
 								path.display()
 							)
-						});
-						if file_name.to_string_lossy().starts_with('_') {
-							println!(
-								"Skipping '_'-prefixed dir: {}",
-								path.display()
+						})
+						.to_string_lossy();
+
+					if file_name == "_static" {
+						if let Dir::Root = dir {
+							let mut subdir_files = self::get_files_recursively(
+								&path,
+								Dir::SubDirStatic,
 							);
-						} else if file_name.to_string_lossy().starts_with('.') {
-							println!(
-								"Skipping '.'-prefixed dir: {}",
-								path.display()
-							);
-						} else {
-							let mut subdir_files = self::get_files(&path);
 							result.append(&mut subdir_files);
+						} else {
+							panic!("Didn't expect to find {} except directly under input directory root.", path.display());
 						}
+					} else if file_name.starts_with('_') {
+						println!(
+							"Skipping '_'-prefixed dir: {}",
+							path.display()
+						);
+					} else if file_name.starts_with('.') {
+						println!(
+							"Skipping '.'-prefixed dir: {}",
+							path.display()
+						);
 					} else {
-						println!("Skipping non-file/dir {}", path.display());
+						let mut subdir_files =
+							self::get_files_recursively(&path, Dir::SubDir);
+						result.append(&mut subdir_files);
 					}
-				} else {
-					println!(
-						"WARNING: Failed getting file type of {}.",
-						entry.path().display()
-					);
 				}
 			}
-			Err(e) => println!(
-				"WARNING: Invalid entry in \"{}\": {}",
-				input_dir.display(),
-				e
-			),
+		} else {
+			println!("Skipping non-file/dir {}", path.display());
 		}
 	}
 
