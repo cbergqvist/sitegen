@@ -1,10 +1,14 @@
+use std::convert::TryInto;
 use std::path::PathBuf;
-use std::{env, fmt};
+use std::{env, fmt, fs};
+
+use yaml_rust::YamlLoader;
 
 pub struct BoolArg {
 	pub name: &'static str,
 	pub help: &'static str,
 	pub value: bool,
+	pub set: bool,
 }
 
 pub struct I16Arg {
@@ -91,10 +95,11 @@ impl Args {
 				name: "help",
 				help: "Print this text.",
 				value: false,
+				set: false,
 			},
 			host: StringArg {
 				name: "host",
-				help: "Set address to bind to. The default 127.0.0.1 can be used for privacy and 0.0.0.0 to give access to other machines.",
+				help: "Set address to bind to for built-in HTTP server. The default 127.0.0.1 can be used for privacy and 0.0.0.0 to give access to other machines.",
 				value: String::from("127.0.0.1"),
 				set: false,
 			},
@@ -112,7 +117,7 @@ impl Args {
 			},
 			port: I16Arg {
 				name: "port",
-				help: "Set port to bind to.",
+				help: "Set port to bind to for built-in HTTP server (default 8090).",
 				value: 8090,
 				set: false,
 			},
@@ -120,14 +125,15 @@ impl Args {
 				name: "watch",
 				help: "Run indefinitely, watching input directory for changes.",
 				value: false,
+				set: false,
 			},
 		}
 	}
 
 	pub fn parse(&mut self, args: env::Args) {
-		let mut bool_args = vec![&mut self.help, &mut self.watch];
-		let mut i16_args = vec![&mut self.port];
-		let mut string_args = vec![
+		let bool_args = &mut [&mut self.help, &mut self.watch];
+		let i16_args = &mut [&mut self.port];
+		let string_args = &mut [
 			&mut self.author,
 			&mut self.base_url,
 			&mut self.email,
@@ -136,6 +142,27 @@ impl Args {
 			&mut self.output,
 		];
 
+		Self::parse_cli(args, bool_args, i16_args, string_args);
+
+		let help_index = 0;
+		assert_eq!(bool_args[help_index].name, "help");
+		if bool_args[help_index].value {
+			return;
+		}
+
+		let input_index = 4;
+		assert_eq!(string_args[input_index].name, "input");
+		let input_dir = PathBuf::from(&string_args[input_index].value);
+
+		Self::parse_file(&input_dir, bool_args, i16_args, string_args);
+	}
+
+	fn parse_cli(
+		args: env::Args,
+		bool_args: &mut [&mut BoolArg],
+		i16_args: &mut [&mut I16Arg],
+		string_args: &mut [&mut StringArg],
+	) {
 		let mut first_arg = true;
 		let mut previous_arg = None;
 		'arg_loop: for mut arg in args {
@@ -173,10 +200,7 @@ impl Args {
 				panic!("Unhandled key-value arg: {}", prev);
 			}
 
-			if arg.len() < 3
-				|| arg.as_bytes()[0] != b'-'
-				|| arg.as_bytes()[1] != b'-'
-			{
+			if !arg.starts_with("--") {
 				panic!("Unexpected argument: {}", arg)
 			}
 
@@ -185,6 +209,7 @@ impl Args {
 			for bool_arg in &mut *bool_args {
 				if arg == bool_arg.name {
 					bool_arg.value = true;
+					bool_arg.set = true;
 					continue 'arg_loop;
 				}
 			}
@@ -205,6 +230,152 @@ impl Args {
 
 			panic!("Unsupported argument: {}", arg)
 		}
+	}
+
+	fn parse_file(
+		input_dir: &PathBuf,
+		bool_args: &mut [&mut BoolArg],
+		i16_args: &mut [&mut I16Arg],
+		string_args: &mut [&mut StringArg],
+	) {
+		let file_path = input_dir.join("_config.yml");
+		if !file_path.exists() {
+			return;
+		}
+
+		let contents = fs::read(&file_path).unwrap_or_else(|e| {
+			panic!("Failed reading {}: {}", file_path.display(), e)
+		});
+
+		let yaml =
+			YamlLoader::load_from_str(&String::from_utf8_lossy(&contents))
+				.unwrap_or_else(|e| {
+					panic!(
+						"Failed loading YAML front matter from \"{}\": {}.",
+						file_path.display(),
+						e
+					)
+				});
+
+		if yaml.len() != 1 {
+			panic!("Expected only one YAML root element (Hash) in configuration file \"{}\" but got {}.", 
+				file_path.display(), yaml.len());
+		}
+
+		if let yaml_rust::Yaml::Hash(hash) = &yaml[0] {
+			let input_arg_name = "input";
+			assert!(string_args.iter().any(|arg| arg.name == input_arg_name));
+			let help_arg_name = "help";
+			assert!(bool_args.iter().any(|arg| arg.name == help_arg_name));
+			for (key, value) in hash {
+				if let yaml_rust::Yaml::String(key) = key {
+					if key == input_arg_name {
+						panic!("Cannot override input through configuration file {}, can only be done on command line.", file_path.display())
+					} else if key == help_arg_name {
+						panic!("Cannot set help configuration file {}, can only be done on command line.", file_path.display())
+					}
+
+					Self::parse_yaml_attribute(
+						key,
+						value,
+						&file_path,
+						bool_args,
+						i16_args,
+						string_args,
+					)
+				} else {
+					panic!("Expected string keys in YAML element in front matter of \"{}\" but got {:?}.", 
+							file_path.display(), &key)
+				}
+			}
+		} else {
+			panic!("Expected Hash as YAML root element in front matter of \"{}\" but got {:?}.", 
+				file_path.display(), &yaml[0])
+		}
+	}
+
+	fn parse_yaml_attribute(
+		key: &str,
+		value: &yaml_rust::Yaml,
+		file_path: &PathBuf,
+		bool_args: &mut [&mut BoolArg],
+		i16_args: &mut [&mut I16Arg],
+		string_args: &mut [&mut StringArg],
+	) {
+		for arg in &mut *bool_args {
+			if arg.name != key {
+				continue;
+			}
+			if arg.set {
+				return;
+			}
+
+			if let yaml_rust::Yaml::Boolean(value) = value {
+				arg.value = *value;
+				arg.set = true;
+				return;
+			} else {
+				panic!(
+					"{} in {} has unexpected type {:?}",
+					key,
+					file_path.display(),
+					value
+				)
+			}
+		}
+
+		for arg in &mut *i16_args {
+			if arg.name != key {
+				continue;
+			}
+			if arg.set {
+				return;
+			}
+
+			if let yaml_rust::Yaml::Integer(value) = value {
+				arg.value =
+					(*value).try_into().unwrap_or_else(|e| {
+						panic!("Failed converting i64 to i16 for {} with value {} in {}: {}", key, value, file_path.display(), e)
+					});
+				arg.set = true;
+				return;
+			} else {
+				panic!(
+					"{} in {} has unexpected type {:?}",
+					key,
+					file_path.display(),
+					value
+				)
+			}
+		}
+
+		for arg in &mut *string_args {
+			if arg.name != key {
+				continue;
+			}
+			if arg.set {
+				return;
+			}
+
+			if let yaml_rust::Yaml::String(value) = value {
+				arg.value = value.clone();
+				arg.set = true;
+				return;
+			} else {
+				panic!(
+					"{} in {} has unexpected type {:?}",
+					key,
+					file_path.display(),
+					value
+				)
+			}
+		}
+
+		panic!(
+			"Unknown field {} in config file {}.",
+			key,
+			file_path.display(),
+		)
 	}
 
 	pub fn print_help(&self) {
