@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::PathBuf;
+
 use yaml_rust::YamlLoader;
 
 #[derive(Clone)]
@@ -95,17 +96,17 @@ pub fn parse(
 		}
 
 		if let yaml_rust::Yaml::Hash(hash) = &yaml[0] {
-			for mapping in hash {
-				if let yaml_rust::Yaml::String(s) = mapping.0 {
+			for (key, value) in hash {
+				if let yaml_rust::Yaml::String(key) = key {
 					parse_yaml_attribute(
 						&mut result,
-						s,
-						mapping.1,
+						key,
+						value,
 						input_file_path,
 					)
 				} else {
 					panic!("Expected string keys in YAML element in front matter of \"{}\" but got {:?}.", 
-							input_file_path.display(), &mapping.0)
+							input_file_path.display(), &key)
 				}
 			}
 		} else {
@@ -168,107 +169,118 @@ fn fixup_date(input_file_path: &PathBuf, front_matter: &mut FrontMatter) {
 
 fn parse_yaml_attribute(
 	front_matter: &mut FrontMatter,
-	name: &str,
+	key: &str,
 	value: &yaml_rust::Yaml,
 	input_file_path: &PathBuf,
 ) {
-	if name == "title" {
-		if let yaml_rust::Yaml::String(value) = value {
-			front_matter.title = value.clone();
-		} else {
-			panic!(
-				"title of \"{}\" has unexpected type {:?}",
-				input_file_path.display(),
-				value
-			)
-		}
-	} else if name == "date" {
-		if let yaml_rust::Yaml::String(value) = value {
-			front_matter.date = Some(value.clone());
-		} else {
-			panic!(
-				"date of \"{}\" has unexpected type {:?}",
-				input_file_path.display(),
-				value
-			)
-		}
-	} else if name == "published" {
-		if let yaml_rust::Yaml::Boolean(value) = value {
-			front_matter.published = *value;
-		} else {
-			panic!(
-				"published of \"{}\" has unexpected type {:?}",
-				input_file_path.display(),
-				value
-			)
-		}
-	} else if name == "edited" {
-		if let yaml_rust::Yaml::String(value) = value {
-			front_matter.edited = Some(value.clone());
-		} else {
-			panic!(
-				"edited of \"{}\" has unexpected type {:?}",
-				input_file_path.display(),
-				value
-			)
-		}
-	} else if name == "categories" {
-		if let yaml_rust::Yaml::Array(value) = value {
-			for element in value {
-				if let yaml_rust::Yaml::String(value) = element {
-					front_matter.categories.push(value.clone())
-				} else {
-					panic!("Element of categories of \"{}\" has unexpected type {:?}",
-						input_file_path.display(), element)
-				}
+	match key {
+		"title" => {
+			if let yaml_rust::Yaml::String(value) = value {
+				front_matter.title = value.clone();
+			} else {
+				panic!(
+					"title of \"{}\" has unexpected type {:?}",
+					input_file_path.display(),
+					value
+				)
 			}
-		} else {
-			panic!(
-				"categories of \"{}\" has unexpected type {:?}",
-				input_file_path.display(),
-				value
-			)
 		}
-	} else if name == "tags" {
-		if let yaml_rust::Yaml::Array(value) = value {
-			for element in value {
-				if let yaml_rust::Yaml::String(value) = element {
-					front_matter.tags.push(value.clone())
-				} else {
-					panic!(
-						"Element of tags of \"{}\" has unexpected type {:?}",
-						input_file_path.display(),
-						element
-					)
-				}
+		"date" => {
+			if let yaml_rust::Yaml::String(value) = value {
+				front_matter.date = Some(value.clone());
+			} else {
+				panic!(
+					"date of \"{}\" has unexpected type {:?}",
+					input_file_path.display(),
+					value
+				)
 			}
-		} else {
-			panic!(
-				"tags of \"{}\" has unexpected type {:?}",
-				input_file_path.display(),
-				value
-			)
 		}
-	} else if name == "layout" {
-		if let yaml_rust::Yaml::String(value) = value {
-			front_matter.layout = Some(value.clone());
-		} else {
-			panic!(
-				"layout of \"{}\" has unexpected type {:?}",
-				input_file_path.display(),
-				value
-			)
+		"published" => {
+			if let yaml_rust::Yaml::Boolean(value) = value {
+				front_matter.published = *value;
+			} else {
+				panic!(
+					"published of \"{}\" has unexpected type {:?}",
+					input_file_path.display(),
+					value
+				)
+			}
 		}
-	} else if let yaml_rust::Yaml::String(value) = value {
-		front_matter
-			.custom_attributes
-			.insert(name.to_string(), value.clone());
-	} else {
-		panic!(
-			"custom attribute \"{}\" of \"{}\" has unexpected type {:?}",
-			name,
-			input_file_path.display(),
-			value
-		)
+		"edited" => {
+			if let yaml_rust::Yaml::String(value) = value {
+				front_matter.edited = Some(value.clone());
+			} else {
+				panic!(
+					"edited of \"{}\" has unexpected type {:?}",
+					input_file_path.display(),
+					value
+				)
+			}
+		}
+		"categories" => {
+			if let yaml_rust::Yaml::Array(value) = value {
+				for element in value {
+					if let yaml_rust::Yaml::String(value) = element {
+						front_matter.categories.push(value.clone())
+					} else {
+						panic!("Element of categories of \"{}\" has unexpected type {:?}",
+							input_file_path.display(), element)
+					}
+				}
+			} else {
+				panic!(
+					"categories of \"{}\" has unexpected type {:?}",
+					input_file_path.display(),
+					value
+				)
+			}
+		}
+		"tags" => {
+			if let yaml_rust::Yaml::Array(value) = value {
+				for element in value {
+					if let yaml_rust::Yaml::String(value) = element {
+						front_matter.tags.push(value.clone())
+					} else {
+						panic!(
+							"Element of tags of \"{}\" has unexpected type {:?}",
+							input_file_path.display(),
+							element
+						)
+					}
+				}
+			} else {
+				panic!(
+					"tags of \"{}\" has unexpected type {:?}",
+					input_file_path.display(),
+					value
+				)
+			}
+		}
+		"layout" => {
+			if let yaml_rust::Yaml::String(value) = value {
+				front_matter.layout = Some(value.clone());
+			} else {
+				panic!(
+					"layout of \"{}\" has unexpected type {:?}",
+					input_file_path.display(),
+					value
+				)
+			}
+		}
+		_ => {
+			if let yaml_rust::Yaml::String(value) = value {
+				front_matter
+					.custom_attributes
+					.insert(key.to_string(), value.clone());
+			} else {
+				panic!(
+					"custom attribute \"{}\" of \"{}\" has unexpected type {:?}",
+					key,
+					input_file_path.display(),
+					value
+				)
+			}
+		}
 	}
 }
