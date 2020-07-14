@@ -3,9 +3,9 @@ use std::ffi::{OsStr, OsString};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::{mpsc::channel, Arc, Condvar, Mutex};
+use std::sync::{mpsc::channel, Arc, Condvar, Mutex, RwLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 use std::{env, fs};
 
 use notify::{watcher, RecursiveMode, Watcher};
@@ -86,35 +86,13 @@ fn inner_main(config: &config::Config) {
 		input_output_map = fs.input_output_map;
 		groups = fs.groups;
 
-		let feed_groups = process_initial_files(
+		process_initial_files(
 			&input_files,
-			&config.input_dir,
-			&config.output_dir,
+			&config,
 			&input_output_map,
 			&groups,
 			&fs.tags,
-		);
-
-		atom::generate(
-			&feed_groups,
-			&config.output_dir,
-			&config.base_url,
-			&config.author,
-			&config.email,
-		);
-
-		util::copy_files_with_prefix(
-			&input_files.raw,
-			&config.input_dir,
-			&config.output_dir,
-		);
-
-		let sitemap_url = write_sitemap_xml(
-			&config.output_dir,
-			&config.base_url,
-			&input_output_map,
-		);
-		write_robots_txt(&config.output_dir, &sitemap_url);
+		)
 	}
 
 	if !config.watch {
@@ -291,63 +269,124 @@ fn build_initial_fileset(
 
 fn process_initial_files(
 	input_files: &markdown::InputFileCollection,
-	input_dir: &PathBuf,
-	output_dir: &PathBuf,
+	config: &config::Config,
 	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
 	groups: &HashMap<String, Vec<InputFile>>,
 	tags: &HashMap<String, Vec<InputFile>>,
-) -> HashMap<String, Vec<atom::FeedEntry>> {
-	let mut feed_map = HashMap::new();
+) {
+	let timer = Instant::now();
 
-	for file_name in &input_files.html {
-		markdown::process_template_file(
-			file_name,
-			input_dir,
-			output_dir,
-			input_output_map,
-			groups,
-		);
-	}
-
-	for file_name in &input_files.markdown {
-		let generated = markdown::process_file(
-			file_name,
-			input_dir,
-			output_dir,
-			input_output_map,
-			groups,
-		);
-		if let Some(group) = generated.group {
-			let entry = atom::FeedEntry {
-				front_matter: generated.file.front_matter,
-				html_content: generated.html_content,
-				permalink: generated.file.path,
-			};
-			match feed_map.entry(group.clone()) {
-				Entry::Vacant(ve) => {
-					ve.insert(vec![entry]);
+	let mut file_count = 0;
+	crossbeam_utils::thread::scope(|s| {
+		let feed_map = Arc::new(RwLock::new(HashMap::new()));
+		let mut feed_map_writers = Vec::new();
+		for file_name in &input_files.markdown {
+			let feed_map_c = feed_map.clone();
+			feed_map_writers.push(s.spawn(move |_| {
+				let generated = markdown::process_file(
+					file_name,
+					&config.input_dir,
+					&config.output_dir,
+					input_output_map,
+					groups,
+				);
+				if let Some(group) = generated.group {
+					let entry = atom::FeedEntry {
+						front_matter: generated.file.front_matter,
+						html_content: generated.html_content,
+						permalink: generated.file.path,
+					};
+					let mut locked_feed_map =
+						feed_map_c.write().unwrap_or_else(|e| {
+							panic!(
+								"Failed acquiring feed map write-lock: {}",
+								e
+							)
+						});
+					match locked_feed_map.entry(group) {
+						Entry::Vacant(ve) => {
+							ve.insert(vec![entry]);
+						}
+						Entry::Occupied(oe) => oe.into_mut().push(entry),
+					}
 				}
-				Entry::Occupied(oe) => oe.into_mut().push(entry),
-			}
+			}));
 		}
-	}
+		file_count += input_files.markdown.len();
 
-	for (tag, entries) in tags {
-		let tags_file = PathBuf::from("tags")
-			.join(&tag)
-			.with_extension(util::HTML_EXTENSION);
+		for file_name in &input_files.html {
+			s.spawn(move |_| {
+				markdown::process_template_file(
+					file_name,
+					&config.input_dir,
+					&config.output_dir,
+					input_output_map,
+					groups,
+				)
+			});
+		}
+		file_count += input_files.html.len();
 
-		markdown::generate_tag_file(
-			&input_dir.join(tags_file),
-			entries,
-			input_dir,
-			output_dir,
-			input_output_map,
-			groups,
-		)
-	}
+		s.spawn(|_| {
+			util::copy_files_with_prefix(
+				&input_files.raw,
+				&config.input_dir,
+				&config.output_dir,
+			);
+		});
+		file_count += input_files.raw.len();
 
-	feed_map
+		for (tag, entries) in tags {
+			s.spawn(move |_| {
+				let tags_file = PathBuf::from("tags")
+					.join(&tag)
+					.with_extension(util::HTML_EXTENSION);
+
+				markdown::generate_tag_file(
+					&config.input_dir.join(tags_file),
+					entries,
+					&config.input_dir,
+					&config.output_dir,
+					input_output_map,
+					groups,
+				);
+			});
+		}
+		file_count += tags.len();
+
+		s.spawn(|_| {
+			let sitemap_url = write_sitemap_xml(
+				&config.output_dir,
+				&config.base_url,
+				&input_output_map,
+			);
+			write_robots_txt(&config.output_dir, &sitemap_url);
+		});
+		file_count += 2;
+
+		for handle in feed_map_writers {
+			handle.join().unwrap_or_else(|e| {
+				panic!("Failed joining on thread: {:?}", e)
+			});
+		}
+		atom::generate(
+			&feed_map.read().unwrap_or_else(|e| {
+				panic!("Failed acquiring feed map read-lock: {}", e)
+			}),
+			&config.output_dir,
+			&config.base_url,
+			&config.author,
+			&config.email,
+		);
+		file_count += 1;
+	})
+	.unwrap_or_else(|e| panic!("Crossbeam scope failed: {:?}", e));
+
+	println!(
+		"Processed {} files in {} ms.",
+		file_count,
+		timer.elapsed().as_millis()
+	)
 }
 
 fn checked_insert(
@@ -418,7 +457,7 @@ fn find_newest_file(
 	output_dir: &PathBuf,
 ) -> Option<PathBuf> {
 	let mut newest_file = None;
-	let mut newest_time = std::time::UNIX_EPOCH;
+	let mut newest_time = UNIX_EPOCH;
 
 	let supported_extensions = [
 		OsStr::new(util::HTML_EXTENSION),
