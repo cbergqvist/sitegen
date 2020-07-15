@@ -164,6 +164,13 @@ pub fn process<T: Read + Seek>(
 	let mut buffered_whitespace = Vec::new();
 	let mut removing_whitespace = false;
 
+	let flush_whitespace = |from: &mut Vec<u8>, to: &mut BufWriter<Vec<u8>>| {
+		if !from.is_empty() {
+			write_to_stream(from, to);
+			from.clear()
+		}
+	};
+
 	loop {
 		let byte: u8 = {
 			let mut buf = [0_u8; 1];
@@ -223,14 +230,6 @@ pub fn process<T: Read + Seek>(
 			&mut capture_buf
 		};
 
-		let flush_whitespace =
-			|from: &mut Vec<u8>, to: &mut BufWriter<Vec<u8>>| {
-				if !from.is_empty() {
-					write_to_stream(from, to);
-					from.clear()
-				}
-			};
-
 		match state {
 			State::RegularContent => match c {
 				Char::OpenCurly => state = State::LastOpenBracket,
@@ -244,7 +243,7 @@ pub fn process<T: Read + Seek>(
 						if removing_whitespace {
 							buffered_whitespace.clear()
 						} else {
-							flush_whitespace(&mut buffered_whitespace, output_buf);
+							flush_whitespace(&mut buffered_whitespace, output_buf)
 						}
 						removing_whitespace = false;
 						write_to_stream(&[byte], output_buf)
@@ -272,8 +271,12 @@ pub fn process<T: Read + Seek>(
 					state = State::ValueNextIdentifier
 				}
 				Char::Whitespace | Char::Newline => {
-					removing_whitespace = false;
-					flush_whitespace(&mut buffered_whitespace, output_buf);
+					if removing_whitespace {
+						buffered_whitespace.clear();
+						removing_whitespace = false
+					} else {
+						flush_whitespace(&mut buffered_whitespace, output_buf)
+					}
 					state = State::ValueNextIdentifier
 				}
 				Char::OpenCurly | Char::CloseCurly | Char::Quote | Char::Percent | Char::Other(..) => panic_at_location(
@@ -462,8 +465,12 @@ pub fn process<T: Read + Seek>(
 					state = State::TagStart
 				}
 				Char::Newline | Char::Whitespace => {
-					removing_whitespace = false;
-					flush_whitespace(&mut buffered_whitespace, output_buf);
+					if removing_whitespace {
+						buffered_whitespace.clear();
+						removing_whitespace = false
+					} else {
+						flush_whitespace(&mut buffered_whitespace, output_buf)
+					}
 					state = State::TagStart
 				}
 				Char::OpenCurly | Char::CloseCurly | Char::Percent | Char::Quote | Char::Other(..) => panic_at_location(
@@ -822,7 +829,9 @@ pub fn process<T: Read + Seek>(
 	}
 
 	match state {
-		State::RegularContent => {}
+		State::RegularContent => {
+			flush_whitespace(&mut buffered_whitespace, parent_output_buf)
+		}
 		_ => panic!(
 			"Content of {} ended while still in state: {:?}",
 			context.input_file_path.display(),
