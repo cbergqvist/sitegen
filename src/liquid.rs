@@ -348,7 +348,7 @@ pub fn process<T: Read + Seek>(
 					assert!(current_identifier.is_empty());
 					queued_identifiers.clear();
 
-					state = State::WaitingForPercent
+					state = State::WaitingForCloseBracket
 				}
 				Char::Dash | Char::Quote | Char::Percent | Char::Newline | Char::Whitespace | Char::OpenCurly => panic_at_location(
 					&format!("Unexpected character following dash: \"{}\"",
