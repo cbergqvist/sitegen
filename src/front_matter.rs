@@ -16,6 +16,7 @@ pub struct FrontMatter {
 	pub layout: Option<String>,
 	pub custom_attributes: BTreeMap<String, String>,
 	pub end_position: u64,
+	pub subsequent_line: usize,
 }
 
 pub fn parse(
@@ -38,6 +39,7 @@ pub fn parse(
 		layout: None,
 		custom_attributes: BTreeMap::new(),
 		end_position: 0,
+		subsequent_line: 1,
 	};
 
 	let mut line = String::new();
@@ -50,10 +52,12 @@ pub fn parse(
 	});
 
 	if first_line_len == 4 && line == "---\n" {
+		result.subsequent_line = 2;
 		println!("Found front matter in: {}", input_file_path.display());
 		let mut front_matter_str = String::new();
 		let mut line_count = 0;
 		loop {
+			result.subsequent_line += 1;
 			line.clear();
 			let _line_len = reader.read_line(&mut line).unwrap_or_else(|e| {
 				panic!(

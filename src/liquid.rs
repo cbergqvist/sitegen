@@ -123,14 +123,20 @@ pub fn process<T: Read + Seek>(
 	enum State {
 		RegularContent,
 		LastOpenBracket,
+		ValueWaitingForDashOrWhitespace,
 		ValueNextIdentifier,
+		ValueEncounteredDashInIdentifierOrEnd,
 		ValueInIdentifier,
 		ValueEnd,
+		ValueWaitingForFirstCloseBracket,
+		TagWaitingForDashOrWhitespace,
 		TagStart,
 		TagFunction,
 		TagNextParameter,
+		TagEncounteredDashInParameterOrEnd,
 		TagInParameter,
 		TagEnd,
+		WaitingForPercent,
 		WaitingForCloseBracket,
 	}
 
@@ -141,16 +147,22 @@ pub fn process<T: Read + Seek>(
 		Newline,
 		Whitespace,
 		Quote,
+		Dash,
 		Other(u8),
 	}
 
 	let mut state = State::RegularContent;
-	let mut position = Position { line: 1, column: 1 };
+	let mut position = Position {
+		line: context.front_matter.subsequent_line,
+		column: 1,
+	};
 	let mut current_identifier: Vec<u8> = Vec::new();
 	let mut parsing_literal = false;
 	let mut queued_identifiers: Vec<String> = Vec::new();
 	let mut cf_stack: Vec<ControlFlow> = Vec::new();
 	let mut capture_buf = BufWriter::new(Vec::new());
+	let mut buffered_whitespace = Vec::new();
+	let mut removing_whitespace = false;
 
 	loop {
 		let byte: u8 = {
@@ -175,6 +187,7 @@ pub fn process<T: Read + Seek>(
 			b'\n' | b'\r' => Char::Newline,
 			b' ' | b'\t' => Char::Whitespace,
 			b'"' => Char::Quote,
+			b'-' => Char::Dash,
 			_ => Char::Other(byte),
 		};
 
@@ -210,22 +223,42 @@ pub fn process<T: Read + Seek>(
 			&mut capture_buf
 		};
 
+		let flush_whitespace =
+			|from: &mut Vec<u8>, to: &mut BufWriter<Vec<u8>>| {
+				if !from.is_empty() {
+					write_to_stream(&from, to);
+					from.clear()
+				}
+			};
+
 		match state {
 			State::RegularContent => match c {
 				Char::OpenCurly => state = State::LastOpenBracket,
-				_ => {
+				Char::Newline | Char::Whitespace => {
 					if !skipping {
+						buffered_whitespace.push(byte)
+					}
+				}
+				Char::CloseCurly | Char::Percent | Char::Dash | Char::Quote | Char::Other(..) => {
+					if !skipping {
+						if !removing_whitespace {
+							flush_whitespace(&mut buffered_whitespace, output_buf);
+						} else {
+							buffered_whitespace.clear()
+						}
+						removing_whitespace = false;
 						write_to_stream(&[byte], output_buf)
 					}
 				}
 			},
 			State::LastOpenBracket => match c {
-				Char::OpenCurly => state = State::ValueNextIdentifier,
-				Char::Percent => state = State::TagStart,
+				Char::OpenCurly => state = State::ValueWaitingForDashOrWhitespace,
+				Char::Percent => state = State::TagWaitingForDashOrWhitespace,
 				Char::CloseCurly
 				| Char::Newline
 				| Char::Whitespace
 				| Char::Quote
+				| Char::Dash
 				| Char::Other(..) => {
 					if !skipping {
 						write_to_stream(&[b'{', byte], output_buf)
@@ -233,6 +266,24 @@ pub fn process<T: Read + Seek>(
 					state = State::RegularContent;
 				}
 			},
+			State::ValueWaitingForDashOrWhitespace => match c {
+				Char::Dash => {
+					removing_whitespace = true;
+					state = State::ValueNextIdentifier
+				}
+				Char::Whitespace | Char::Newline => {
+					removing_whitespace = false;
+					flush_whitespace(&mut buffered_whitespace, output_buf);
+					state = State::ValueNextIdentifier
+				}
+				Char::OpenCurly | Char::CloseCurly | Char::Quote | Char::Percent | Char::Other(..) => panic_at_location(
+					&format!("Unexpected non-whitespace, non-dash character \"{}\"",
+						byte as char
+					),
+					&position,
+					context,
+				)
+			}
 			State::ValueNextIdentifier => match c {
 				Char::OpenCurly => panic_at_location(
 					"Unexpected open bracket while in template mode.",
@@ -267,11 +318,50 @@ pub fn process<T: Read + Seek>(
 					current_identifier.push(byte);
 					state = State::ValueInIdentifier;
 				}
+				Char::Dash => {
+					current_identifier.push(byte);
+					if removing_whitespace {
+						state = State::ValueEncounteredDashInIdentifierOrEnd
+					} else {
+						state = State::ValueInIdentifier
+					}
+				}
 				Char::Percent | Char::Other(..) => {
 					current_identifier.push(byte);
-					state = State::ValueInIdentifier;
+					state = State::ValueInIdentifier
 				}
 			},
+			State::ValueEncounteredDashInIdentifierOrEnd => match c {
+				Char::CloseCurly => {
+					current_identifier.pop();
+					assert!(current_identifier.is_empty());
+
+					if !skipping {
+						output_template_value(
+							&mut output_buf,
+							&queued_identifiers,
+							&outer_variables,
+							&cf_stack,
+							context,
+						)
+					}
+					assert!(current_identifier.is_empty());
+					queued_identifiers.clear();
+
+					state = State::WaitingForPercent
+				}
+				Char::Dash | Char::Quote | Char::Percent | Char::Newline | Char::Whitespace | Char::OpenCurly => panic_at_location(
+					&format!("Unexpected character following dash: \"{}\"",
+						byte as char
+					),
+					&position,
+					context,
+				),
+				Char::Other(..) => {
+					current_identifier.push(byte);
+					state = State::ValueInIdentifier
+				}
+			}
 			State::ValueInIdentifier => if parsing_literal {
 				if current_identifier.len() > 1 && current_identifier.last() == Some(&b'"') {
 					match c {
@@ -281,7 +371,7 @@ pub fn process<T: Read + Seek>(
 							parsing_literal = false;
 							state = State::ValueNextIdentifier
 						},
-						Char::Percent | Char::OpenCurly | Char::CloseCurly | Char::Quote | Char::Other(..) => {
+						Char::Percent | Char::OpenCurly | Char::CloseCurly | Char::Quote | Char::Dash | Char::Other(..) => {
 							panic!("Already had 2 quotes in string literal: {}", String::from_utf8_lossy(&current_identifier))
 						}
 					}
@@ -329,13 +419,24 @@ pub fn process<T: Read + Seek>(
 						&position,
 						context,
 					),
-					Char::OpenCurly | Char::Percent | Char::Other(..) => {
+					Char::OpenCurly | Char::Percent | Char::Dash | Char::Other(..) => {
 						current_identifier.push(byte)
 					}
 				}
 			},
 			State::ValueEnd => match c {
-				Char::CloseCurly => state = State::WaitingForCloseBracket,
+				Char::CloseCurly => {
+					if removing_whitespace {
+						panic_at_location("Got beginning dash without ending dash before close-curly.", &position, context)
+					}
+					state = State::WaitingForCloseBracket
+				}
+				Char::Dash => {
+					if !removing_whitespace {
+						panic_at_location("Got ending dash without beginning dash.", &position, context)
+					}
+					state = State::ValueWaitingForFirstCloseBracket
+				}
 				Char::Whitespace | Char::Newline => {}
 				Char::OpenCurly | Char::Percent | Char::Quote | Char::Other(..) => panic_at_location(
 					&format!("Unexpected non-whitespace character \"{}\" when looking for value end curly braces.",
@@ -345,6 +446,34 @@ pub fn process<T: Read + Seek>(
 					context,
 				)
 			},
+			State::ValueWaitingForFirstCloseBracket => match c {
+				Char::CloseCurly => state = State::WaitingForCloseBracket,
+				Char::Whitespace | Char::Newline | Char::OpenCurly | Char::Percent | Char::Quote | Char::Dash | Char::Other(..) => panic_at_location(
+					&format!("Unexpected character \"{}\" following dash when expecting end curly braces.",
+						byte as char
+					),
+					&position,
+					context,
+				)
+			}
+			State::TagWaitingForDashOrWhitespace => match c {
+				Char::Dash => {
+					removing_whitespace = true;
+					state = State::TagStart
+				}
+				Char::Newline | Char::Whitespace => {
+					removing_whitespace = false;
+					flush_whitespace(&mut buffered_whitespace, output_buf);
+					state = State::TagStart
+				}
+				Char::OpenCurly | Char::CloseCurly | Char::Percent | Char::Quote | Char::Other(..) => panic_at_location(
+					&format!("Unexpected character \"{}\" following open tag looking for dash or whitespace.",
+						byte as char
+					),
+					&position,
+					context,
+				)
+			}
 			State::TagStart => match c {
 				Char::Percent | Char::OpenCurly | Char::CloseCurly => panic_at_location(
 					&format!(
@@ -360,13 +489,13 @@ pub fn process<T: Read + Seek>(
 					context,
 				),
 				Char::Whitespace | Char::Newline => {}
-				Char::Other(..) => {
+				Char::Dash | Char::Other(..) => {
 					current_identifier.push(byte);
 					state = State::TagFunction;
 				}
 			},
 			State::TagFunction => match c {
-				Char::Percent | Char::OpenCurly | Char::CloseCurly => panic_at_location(
+				Char::Percent | Char::OpenCurly | Char::CloseCurly | Char::Dash => panic_at_location(
 					&format!(
 						"Unexpected character \"{}\" in function name.",
 						byte as char
@@ -447,6 +576,14 @@ pub fn process<T: Read + Seek>(
 					state = State::TagEnd
 				}
 				Char::Percent => {
+					if removing_whitespace {
+						panic_at_location(
+							"Got beginning dash without ending dash before percent.",
+							&position,
+							context,
+						)
+					}
+
 					assert!(current_identifier.is_empty());
 					let function = &queued_identifiers[0];
 					let parameters = &queued_identifiers[1..];
@@ -485,11 +622,67 @@ pub fn process<T: Read + Seek>(
 					parsing_literal = true;
 					state = State::TagInParameter
 				}
+				Char::Dash => {
+					current_identifier.push(byte);
+					if removing_whitespace {
+						state = State::TagEncounteredDashInParameterOrEnd
+					} else {
+						state = State::TagInParameter
+					}
+				}
 				Char::Other(..) => {
 					current_identifier.push(byte);
 					state = State::TagInParameter
 				}
 			},
+			State::TagEncounteredDashInParameterOrEnd => match c {
+				Char::Percent => {
+					current_identifier.pop();
+					assert!(current_identifier.is_empty());
+
+					let function = &queued_identifiers[0];
+					let parameters = &queued_identifiers[1..];
+
+					let before_function_pos = input_file.seek(SeekFrom::Current(0)).unwrap_or_else(|e|
+						panic!("Failed querying current stream position: {}", e));
+
+					run_function(
+						input_file,
+						&mut output_buf,
+						function,
+						parameters,
+						&mut outer_variables,
+						&mut cf_stack,
+						skipping,
+						context,
+					);
+
+					assert!(current_identifier.is_empty());
+					queued_identifiers.clear();
+
+					let end_function_pos = input_file.seek(SeekFrom::Current(0)).unwrap_or_else(|e|
+						panic!("Failed querying current stream position: {}", e));
+					state = if before_function_pos == end_function_pos {
+						State::WaitingForCloseBracket
+					} else {
+						// Running the function may have caused us to seek back
+						// in the stream to a prior tag (from after an endfor to
+						// after a for).
+						State::TagEnd
+					};
+				}
+				Char::Dash | Char::Quote | Char::CloseCurly | Char::Newline | Char::Whitespace | Char::OpenCurly => panic_at_location(
+					&format!("Unexpected character following dash: \"{}\"",
+						byte as char
+					),
+					&position,
+					context,
+				),
+				Char::Other(..) => {
+					current_identifier.push(byte);
+					state = State::TagInParameter
+				}
+			}
 			State::TagInParameter => if parsing_literal {
 				if current_identifier.len() > 1 && current_identifier.last() == Some(&b'"') {
 					match c {
@@ -499,7 +692,7 @@ pub fn process<T: Read + Seek>(
 							parsing_literal = false;
 							state = State::TagNextParameter
 						},
-						Char::Percent | Char::OpenCurly | Char::CloseCurly | Char::Quote | Char::Other(..) => {
+						Char::Percent | Char::OpenCurly | Char::CloseCurly | Char::Quote | Char::Dash | Char::Other(..) => {
 							panic!("Already had 2 quotes in string literal ({}) when encountering: {}", String::from_utf8_lossy(&current_identifier), byte as char)
 						}
 					}
@@ -551,10 +744,17 @@ pub fn process<T: Read + Seek>(
 					Char::OpenCurly
 					| Char::CloseCurly
 					| Char::Percent
+					| Char::Dash
 					| Char::Other(..) => current_identifier.push(byte),
 				}
 			},
 			State::TagEnd => match c {
+				Char::Dash => {
+					if !removing_whitespace {
+						panic_at_location("Got ending dash without beginning dash.", &position, context)
+					}
+					state = State::WaitingForPercent
+				}
 				Char::Percent => state = State::WaitingForCloseBracket,
 				Char::Whitespace | Char::Newline => {}
 				Char::OpenCurly | Char::CloseCurly | Char::Quote | Char::Other(..) => {
@@ -568,6 +768,19 @@ pub fn process<T: Read + Seek>(
 					)
 				}
 			},
+			State::WaitingForPercent => match c {
+				Char::Percent => state = State::WaitingForCloseBracket,
+				Char::OpenCurly | Char::CloseCurly | Char::Newline | Char::Whitespace | Char::Quote | Char::Dash | Char::Other(..) => {
+					panic_at_location(
+						&format!(
+							"Unexpected character \"{}\" when looking for ending percent.",
+							byte as char
+						),
+						&position,
+						context,
+					)
+				}
+			}
 			State::WaitingForCloseBracket => match c {
 				Char::CloseCurly => state = State::RegularContent,
 				Char::OpenCurly
@@ -575,8 +788,12 @@ pub fn process<T: Read + Seek>(
 				| Char::Newline
 				| Char::Whitespace
 				| Char::Quote
+				| Char::Dash
 				| Char::Other(..) => panic_at_location(
-					"Missing close-bracket.",
+					&format!(
+							"Unexpected character \"{}\" when looking for close-bracket.",
+							byte as char
+					),
 					&position,
 					context,
 				),
@@ -714,7 +931,7 @@ fn output_template_value(
 				};
 
 				if value.len() != EXAMPLE_DATETIME.len() {
-					panic!("date filter requires valid date format such as {}, but got: {}", EXAMPLE_DATETIME, value)
+					panic!("date filter requires valid date format such as \"{}\", but got: \"{}\"", EXAMPLE_DATETIME, value)
 				}
 				let mut special = false;
 				let mut result = String::new();

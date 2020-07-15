@@ -257,6 +257,7 @@ fn build_initial_fileset(
 						layout: None,
 						custom_attributes: BTreeMap::new(),
 						end_position: 0,
+						subsequent_line: 1,
 					}),
 				},
 				group: None,

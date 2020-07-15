@@ -17,6 +17,7 @@ fn create_front_matter(title: &str, date: Option<&str>) -> FrontMatter {
 		layout: None,
 		custom_attributes: BTreeMap::new(),
 		end_position: 0,
+		subsequent_line: 1,
 	}
 }
 
