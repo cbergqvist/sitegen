@@ -93,17 +93,20 @@ impl InputFileCollection {
 	}
 }
 
-enum Dir {
+enum Level {
 	Root,
 	SubDir,
 	SubDirStatic,
 }
 
 pub fn get_files(input_dir: &PathBuf) -> InputFileCollection {
-	get_files_recursively(input_dir, Dir::Root)
+	get_files_recursively(input_dir, &Level::Root)
 }
 
-fn get_files_recursively(input_dir: &PathBuf, dir: Dir) -> InputFileCollection {
+fn get_files_recursively(
+	input_dir: &PathBuf,
+	level: &Level,
+) -> InputFileCollection {
 	let css_extension = OsStr::new(util::CSS_EXTENSION);
 	let html_extension = OsStr::new(util::HTML_EXTENSION);
 	let markdown_extension = OsStr::new(util::MARKDOWN_EXTENSION);
@@ -131,15 +134,15 @@ fn get_files_recursively(input_dir: &PathBuf, dir: Dir) -> InputFileCollection {
 		});
 
 		if ft.is_file() {
-			match dir {
-				Dir::SubDirStatic => {
+			match level {
+				Level::SubDirStatic => {
 					println!(
 						"Adding file from static directory: {}",
 						path.display()
 					);
 					result.raw.push(path)
 				}
-				Dir::Root | Dir::SubDir => {
+				Level::Root | Level::SubDir => {
 					if let Some(extension) = path.extension() {
 						let recognized = || {
 							println!(
@@ -172,13 +175,15 @@ fn get_files_recursively(input_dir: &PathBuf, dir: Dir) -> InputFileCollection {
 				}
 			}
 		} else if ft.is_dir() {
-			match dir {
-				Dir::SubDirStatic => {
-					let mut subdir_files =
-						self::get_files_recursively(&path, Dir::SubDirStatic);
+			match level {
+				Level::SubDirStatic => {
+					let mut subdir_files = self::get_files_recursively(
+						&path,
+						&Level::SubDirStatic,
+					);
 					result.append(&mut subdir_files);
 				}
-				Dir::Root | Dir::SubDir => {
+				Level::Root | Level::SubDir => {
 					let file_name = path
 						.file_name()
 						.unwrap_or_else(|| {
@@ -190,10 +195,10 @@ fn get_files_recursively(input_dir: &PathBuf, dir: Dir) -> InputFileCollection {
 						.to_string_lossy();
 
 					if file_name == "_static" {
-						if let Dir::Root = dir {
+						if let Level::Root = level {
 							let mut subdir_files = self::get_files_recursively(
 								&path,
-								Dir::SubDirStatic,
+								&Level::SubDirStatic,
 							);
 							result.append(&mut subdir_files);
 						} else {
@@ -211,7 +216,7 @@ fn get_files_recursively(input_dir: &PathBuf, dir: Dir) -> InputFileCollection {
 						);
 					} else {
 						let mut subdir_files =
-							self::get_files_recursively(&path, Dir::SubDir);
+							self::get_files_recursively(&path, &Level::SubDir);
 						result.append(&mut subdir_files);
 					}
 				}

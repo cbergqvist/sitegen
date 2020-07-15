@@ -91,7 +91,7 @@ fn inner_main(config: &config::Config) {
 
 		process_initial_files(
 			&input_files,
-			&config,
+			config,
 			&input_output_map,
 			&groups,
 			&fs.tags,
@@ -384,7 +384,7 @@ fn process_initial_files(
 			let sitemap_url = write_sitemap_xml(
 				&config.output_dir,
 				&config.base_url,
-				&input_output_map,
+				input_output_map,
 			);
 			write_robots_txt(&config.output_dir, &sitemap_url);
 		});

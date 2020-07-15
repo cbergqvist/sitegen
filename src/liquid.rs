@@ -226,7 +226,7 @@ pub fn process<T: Read + Seek>(
 		let flush_whitespace =
 			|from: &mut Vec<u8>, to: &mut BufWriter<Vec<u8>>| {
 				if !from.is_empty() {
-					write_to_stream(&from, to);
+					write_to_stream(from, to);
 					from.clear()
 				}
 			};
@@ -241,10 +241,10 @@ pub fn process<T: Read + Seek>(
 				}
 				Char::CloseCurly | Char::Percent | Char::Dash | Char::Quote | Char::Other(..) => {
 					if !skipping {
-						if !removing_whitespace {
-							flush_whitespace(&mut buffered_whitespace, output_buf);
-						} else {
+						if removing_whitespace {
 							buffered_whitespace.clear()
+						} else {
+							flush_whitespace(&mut buffered_whitespace, output_buf);
 						}
 						removing_whitespace = false;
 						write_to_stream(&[byte], output_buf)
@@ -506,14 +506,12 @@ pub fn process<T: Read + Seek>(
 				Char::Newline => {
 					assert!(!current_identifier.is_empty());
 					assert_eq!(queued_identifiers.len(), 0);
-					let function = String::from_utf8_lossy(&current_identifier);
-					let parameters = &queued_identifiers;
+					queued_identifiers.push(String::from_utf8_lossy(&current_identifier).to_string());
 
 					run_function(
 						input_file,
 						&mut output_buf,
-						&function,
-						parameters,
+						&queued_identifiers,
 						&mut outer_variables,
 						&mut cf_stack,
 						skipping,
@@ -522,7 +520,7 @@ pub fn process<T: Read + Seek>(
 
 					current_identifier.clear();
 					assert!(!parsing_literal);
-					assert_eq!(queued_identifiers.len(), 0);
+					queued_identifiers.clear();
 
 					state = State::TagEnd
 				},
@@ -555,14 +553,11 @@ pub fn process<T: Read + Seek>(
 				),
 				Char::Newline => {
 					assert!(current_identifier.is_empty());
-					let function = &queued_identifiers[0];
-					let parameters = &queued_identifiers[1..];
 
 					run_function(
 						input_file,
 						&mut output_buf,
-						function,
-						parameters,
+						&queued_identifiers,
 						&mut outer_variables,
 						&mut cf_stack,
 						skipping,
@@ -585,8 +580,6 @@ pub fn process<T: Read + Seek>(
 					}
 
 					assert!(current_identifier.is_empty());
-					let function = &queued_identifiers[0];
-					let parameters = &queued_identifiers[1..];
 
 					let before_function_pos = input_file.seek(SeekFrom::Current(0)).unwrap_or_else(|e|
 						panic!("Failed querying current stream position: {}", e));
@@ -594,8 +587,7 @@ pub fn process<T: Read + Seek>(
 					run_function(
 						input_file,
 						&mut output_buf,
-						function,
-						parameters,
+						&queued_identifiers,
 						&mut outer_variables,
 						&mut cf_stack,
 						skipping,
@@ -640,17 +632,13 @@ pub fn process<T: Read + Seek>(
 					current_identifier.pop();
 					assert!(current_identifier.is_empty());
 
-					let function = &queued_identifiers[0];
-					let parameters = &queued_identifiers[1..];
-
 					let before_function_pos = input_file.seek(SeekFrom::Current(0)).unwrap_or_else(|e|
 						panic!("Failed querying current stream position: {}", e));
 
 					run_function(
 						input_file,
 						&mut output_buf,
-						function,
-						parameters,
+						&queued_identifiers,
 						&mut outer_variables,
 						&mut cf_stack,
 						skipping,
@@ -717,14 +705,11 @@ pub fn process<T: Read + Seek>(
 									.to_string(),
 							);
 						}
-						let function = &queued_identifiers[0];
-						let parameters = &queued_identifiers[1..];
 
 						run_function(
 							input_file,
 							&mut output_buf,
-							function,
-							parameters,
+							&queued_identifiers,
 							&mut outer_variables,
 							&mut cf_stack,
 							skipping,
@@ -1262,13 +1247,15 @@ fn fetch_value(
 fn run_function<T: Read + Seek>(
 	input_file: &mut BufReader<T>,
 	mut output_buf: &mut BufWriter<Vec<u8>>,
-	function: &str,
-	parameters: &[String],
+	identifiers: &[String],
 	outer_variables: &mut HashMap<String, Value>,
 	cf_stack: &mut Vec<ControlFlow>,
 	skipping: bool,
 	context: &Context,
 ) {
+	let function = identifiers[0].as_str();
+	let parameters = &identifiers[1..];
+
 	if function.is_empty() {
 		panic!("Empty function name.")
 	}
