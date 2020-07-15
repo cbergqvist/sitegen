@@ -57,6 +57,7 @@ pub struct Args {
 	pub output: StringArg,
 	pub port: I16Arg,
 	pub serial: BoolArg,
+	pub single_file: StringArg,
 	pub watch: BoolArg,
 }
 
@@ -69,6 +70,7 @@ pub struct Config {
 	pub output_dir: PathBuf,
 	pub port: i16,
 	pub serial: bool,
+	pub single_file: Option<PathBuf>,
 	pub watch: bool,
 }
 
@@ -129,6 +131,12 @@ impl Args {
 				value: false,
 				set: false,
 			},
+			single_file: StringArg {
+				name: "single_file",
+				help: "Set to path to only process that one single file.",
+				value: String::from(""),
+				set: false,
+			},
 			watch: BoolArg {
 				name: "watch",
 				help: "Run indefinitely, watching input directory for changes.",
@@ -149,6 +157,7 @@ impl Args {
 			&mut self.host,
 			&mut self.input,
 			&mut self.output,
+			&mut self.single_file,
 		];
 
 		Self::parse_cli(args, bool_args, i16_args, string_args);
@@ -397,18 +406,22 @@ impl Args {
 		println!("{}", self.output);
 		println!("{}", self.port);
 		println!("{}", self.serial);
+		println!("{}", self.single_file);
 		println!("{}", self.watch);
 	}
 
 	pub fn values(self) -> Config {
-		let mut base_url = self.base_url.value;
-		if !self.base_url.set {
-			base_url = String::from("http://");
-			base_url.push_str(&self.host.value);
-			base_url.push(':');
-			base_url.push_str(&self.port.value.to_string());
-			base_url.push('/');
-		}
+		let base_url = if self.base_url.set {
+			self.base_url.value
+		} else {
+			format!("http://{}:{}/", &self.host.value, &self.port.value)
+		};
+
+		let single_file = if self.single_file.value.is_empty() {
+			None
+		} else {
+			Some(PathBuf::from(self.single_file.value))
+		};
 
 		Config {
 			author: self.author.value,
@@ -419,6 +432,7 @@ impl Args {
 			output_dir: PathBuf::from(self.output.value),
 			port: self.port.value,
 			serial: self.serial.value,
+			single_file,
 			watch: self.watch.value,
 		}
 	}

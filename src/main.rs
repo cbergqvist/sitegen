@@ -284,7 +284,15 @@ fn process_initial_files(
 	crossbeam_utils::thread::scope(|s| {
 		let feed_map = Arc::new(RwLock::new(HashMap::new()));
 		let mut feed_map_writers = Vec::new();
+		let mut processed_single = false;
 		for file_name in &input_files.markdown {
+			if config.single_file.is_some()
+				&& config.single_file.as_deref() != Some(file_name)
+			{
+				continue;
+			}
+
+			processed_single = true;
 			let feed_map_c = feed_map.clone();
 			let handle = s.spawn(move |_| {
 				let generated = markdown::process_file(
@@ -326,6 +334,13 @@ fn process_initial_files(
 		file_count += input_files.markdown.len();
 
 		for file_name in &input_files.html {
+			if config.single_file.is_some()
+				&& config.single_file.as_deref() != Some(file_name)
+			{
+				continue;
+			}
+
+			processed_single = true;
 			let handle = s.spawn(move |_| {
 				markdown::process_template_file(
 					file_name,
@@ -343,9 +358,20 @@ fn process_initial_files(
 		}
 		file_count += input_files.html.len();
 
-		let handle = s.spawn(|_| {
+		let raw = if let Some(single_file) = &config.single_file {
+			if input_files.raw.contains(&single_file) {
+				processed_single = true;
+				vec![single_file.clone()]
+			} else {
+				Vec::new()
+			}
+		} else {
+			input_files.raw.clone()
+		};
+
+		let handle = s.spawn(move |_| {
 			util::copy_files_with_prefix(
-				&input_files.raw,
+				&raw,
 				&config.input_dir,
 				&config.output_dir,
 			);
@@ -358,11 +384,17 @@ fn process_initial_files(
 		file_count += input_files.raw.len();
 
 		for (tag, entries) in tags {
-			let handle = s.spawn(move |_| {
-				let tags_file = PathBuf::from("tags")
-					.join(&tag)
-					.with_extension(util::HTML_EXTENSION);
+			let tags_file = PathBuf::from("tags")
+				.join(&tag)
+				.with_extension(util::HTML_EXTENSION);
+			if config.single_file.is_some()
+				&& config.single_file.as_deref() != Some(&tags_file)
+			{
+				continue;
+			}
 
+			processed_single = true;
+			let handle = s.spawn(move |_| {
 				markdown::generate_tag_file(
 					&config.input_dir.join(tags_file),
 					entries,
@@ -379,6 +411,12 @@ fn process_initial_files(
 			}
 		}
 		file_count += tags.len();
+
+		if let Some(single_file) = &config.single_file {
+			if !processed_single {
+				panic!("Failed finding single file: {}", single_file.display());
+			}
+		}
 
 		let handle = s.spawn(|_| {
 			let sitemap_url = write_sitemap_xml(
