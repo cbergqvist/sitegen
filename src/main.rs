@@ -285,7 +285,7 @@ fn process_initial_files(
 		let mut feed_map_writers = Vec::new();
 		for file_name in &input_files.markdown {
 			let feed_map_c = feed_map.clone();
-			feed_map_writers.push(s.spawn(move |_| {
+			let handle = s.spawn(move |_| {
 				let generated = markdown::process_file(
 					file_name,
 					&config.input_dir,
@@ -313,12 +313,19 @@ fn process_initial_files(
 						Entry::Occupied(oe) => oe.into_mut().push(entry),
 					}
 				}
-			}));
+			});
+			if config.serial {
+				handle.join().unwrap_or_else(|e| {
+					panic!("Failed joining on thread: {:?}", e)
+				});
+			} else {
+				feed_map_writers.push(handle);
+			}
 		}
 		file_count += input_files.markdown.len();
 
 		for file_name in &input_files.html {
-			s.spawn(move |_| {
+			let handle = s.spawn(move |_| {
 				markdown::process_template_file(
 					file_name,
 					&config.input_dir,
@@ -327,20 +334,30 @@ fn process_initial_files(
 					groups,
 				)
 			});
+			if config.serial {
+				handle.join().unwrap_or_else(|e| {
+					panic!("Failed joining on thread: {:?}", e)
+				});
+			}
 		}
 		file_count += input_files.html.len();
 
-		s.spawn(|_| {
+		let handle = s.spawn(|_| {
 			util::copy_files_with_prefix(
 				&input_files.raw,
 				&config.input_dir,
 				&config.output_dir,
 			);
 		});
+		if config.serial {
+			handle.join().unwrap_or_else(|e| {
+				panic!("Failed joining on thread: {:?}", e)
+			});
+		}
 		file_count += input_files.raw.len();
 
 		for (tag, entries) in tags {
-			s.spawn(move |_| {
+			let handle = s.spawn(move |_| {
 				let tags_file = PathBuf::from("tags")
 					.join(&tag)
 					.with_extension(util::HTML_EXTENSION);
@@ -354,10 +371,15 @@ fn process_initial_files(
 					groups,
 				);
 			});
+			if config.serial {
+				handle.join().unwrap_or_else(|e| {
+					panic!("Failed joining on thread: {:?}", e)
+				});
+			}
 		}
 		file_count += tags.len();
 
-		s.spawn(|_| {
+		let handle = s.spawn(|_| {
 			let sitemap_url = write_sitemap_xml(
 				&config.output_dir,
 				&config.base_url,
@@ -365,6 +387,11 @@ fn process_initial_files(
 			);
 			write_robots_txt(&config.output_dir, &sitemap_url);
 		});
+		if config.serial {
+			handle.join().unwrap_or_else(|e| {
+				panic!("Failed joining on thread: {:?}", e)
+			});
+		}
 		file_count += 2;
 
 		for handle in feed_map_writers {

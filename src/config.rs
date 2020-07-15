@@ -56,6 +56,7 @@ pub struct Args {
 	pub input: StringArg,
 	pub output: StringArg,
 	pub port: I16Arg,
+	pub serial: BoolArg,
 	pub watch: BoolArg,
 }
 
@@ -67,6 +68,7 @@ pub struct Config {
 	pub input_dir: PathBuf,
 	pub output_dir: PathBuf,
 	pub port: i16,
+	pub serial: bool,
 	pub watch: bool,
 }
 
@@ -121,6 +123,12 @@ impl Args {
 				value: 8090,
 				set: false,
 			},
+			serial: BoolArg {
+				name: "serial",
+				help: "Run initial file processing in serial mode instead of concurrently.",
+				value: false,
+				set: false,
+			},
 			watch: BoolArg {
 				name: "watch",
 				help: "Run indefinitely, watching input directory for changes.",
@@ -131,7 +139,8 @@ impl Args {
 	}
 
 	pub fn parse(&mut self, args: env::Args) {
-		let bool_args = &mut [&mut self.help, &mut self.watch];
+		let bool_args =
+			&mut [&mut self.help, &mut self.serial, &mut self.watch];
 		let i16_args = &mut [&mut self.port];
 		let string_args = &mut [
 			&mut self.author,
@@ -387,6 +396,7 @@ impl Args {
 		println!("{}", self.input);
 		println!("{}", self.output);
 		println!("{}", self.port);
+		println!("{}", self.serial);
 		println!("{}", self.watch);
 	}
 
@@ -408,6 +418,7 @@ impl Args {
 			input_dir: PathBuf::from(self.input.value),
 			output_dir: PathBuf::from(self.output.value),
 			port: self.port.value,
+			serial: self.serial.value,
 			watch: self.watch.value,
 		}
 	}
