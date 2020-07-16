@@ -98,3 +98,17 @@ pub fn strip_prefix(path: &PathBuf, prefix: &PathBuf) -> PathBuf {
 		})
 		.to_path_buf()
 }
+
+pub fn capitalize(input: &str) -> String {
+	let mut output = String::with_capacity(input.len());
+	let mut chars = input.chars();
+	if let Some(first) = chars.next() {
+		for c in first.to_uppercase() {
+			output.push(c);
+		}
+		for c in chars {
+			output.push(c);
+		}
+	}
+	output
+}

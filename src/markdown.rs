@@ -294,7 +294,7 @@ pub fn process_file(
 	let template_path_result =
 		compute_template_path(input_file_path, root_input_dir);
 
-	let mut html_content = String::new();
+	let mut html_content = String::with_capacity(markdown_content.len());
 	html::push_html(&mut html_content, Parser::new(&markdown_content));
 
 	let mut template_file = BufReader::new(

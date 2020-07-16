@@ -28,6 +28,7 @@ pub fn generate(
 	base_url: &str,
 	author: &str,
 	email: &str,
+	title: &str,
 ) {
 	for (group, entries) in groups {
 		let mut latest_update: Option<&String> = None;
@@ -55,8 +56,9 @@ pub fn generate(
 		let feed_name = output_dir
 			.join(PathBuf::from("feeds").join(PathBuf::from(&group)))
 			.with_extension(util::XML_EXTENSION);
+
 		let header = FeedHeader {
-			title: group.to_string(),
+			title: format!("{} - {}", title, util::capitalize(group)),
 			base_url: base_url.to_string(),
 			latest_update: latest_update.cloned(),
 			author_name: author.to_string(),

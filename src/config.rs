@@ -59,6 +59,7 @@ pub struct Args {
 	pub port: I16Arg,
 	pub serial: BoolArg,
 	pub single_file: StringArg,
+	pub title: StringArg,
 	pub watch: BoolArg,
 }
 
@@ -73,6 +74,7 @@ pub struct Config {
 	pub port: i16,
 	pub serial: bool,
 	pub single_file: Option<PathBuf>,
+	pub title: String,
 	pub watch: bool,
 }
 
@@ -145,6 +147,12 @@ impl Args {
 				value: String::from(""),
 				set: false,
 			},
+			title: StringArg {
+				name: "title",
+				help: "Title of the site.",
+				value: String::from("Default Title"),
+				set: false,
+			},
 			watch: BoolArg {
 				name: "watch",
 				help: "Run indefinitely, watching input directory for changes.",
@@ -171,6 +179,7 @@ impl Args {
 				&mut self.input,
 				&mut self.output,
 				&mut self.single_file,
+				&mut self.title,
 			];
 
 			Self::parse_cli(args, bool_args, i16_args, string_args);
@@ -426,6 +435,7 @@ impl Args {
 		println!("{}", self.port);
 		println!("{}", self.serial);
 		println!("{}", self.single_file);
+		println!("{}", self.title);
 		println!("{}", self.watch);
 	}
 
@@ -453,6 +463,7 @@ impl Args {
 			port: self.port.value,
 			serial: self.serial.value,
 			single_file,
+			title: self.title.value,
 			watch: self.watch.value,
 		}
 	}

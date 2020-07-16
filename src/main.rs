@@ -455,6 +455,7 @@ fn process_initial_files(
 			&config.base_url,
 			&config.author,
 			&config.email,
+			&config.title,
 		);
 		file_count += 1;
 	})
