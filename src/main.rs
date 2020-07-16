@@ -551,7 +551,7 @@ fn get_front_matter_and_output_path<'a>(
 			)
 		});
 
-	if !deploy && !front_matter.published {
+	if deploy && !front_matter.published {
 		None
 	} else {
 		Some((front_matter, output_file_path))
