@@ -328,8 +328,7 @@ fn process_initial_files(
 					println!(
 						"Skipping unpublished file: {}",
 						file_name.display()
-					);
-					return;
+					)
 				}
 			});
 			if config.serial {
@@ -368,7 +367,7 @@ fn process_initial_files(
 		file_count += input_files.html.len();
 
 		let raw = if let Some(single_file) = &config.single_file {
-			if input_files.raw.contains(&single_file) {
+			if input_files.raw.contains(single_file) {
 				processed_single = true;
 				vec![single_file.clone()]
 			} else {
@@ -946,8 +945,7 @@ fn handle_html_updated(
 					println!(
 						"Skipping unpublished file: {}",
 						file_name.display()
-					);
-					continue;
+					)
 				}
 			}
 
@@ -974,8 +972,7 @@ fn handle_html_updated(
 					groups,
 				);
 			} else {
-				println!("Skipping unpublished file: {}", file_name.display());
-				continue;
+				println!("Skipping unpublished file: {}", file_name.display())
 			}
 		}
 

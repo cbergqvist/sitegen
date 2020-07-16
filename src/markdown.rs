@@ -354,7 +354,7 @@ pub fn reindex(
 
 	if let Some(group) = &grouped_file.group {
 		if match previous {
-			Some(previous) => previous.group.as_deref() != Some(&group),
+			Some(previous) => previous.group.as_deref() != Some(group),
 			None => true,
 		} {
 			let input_file_rec = InputFile {
