@@ -1009,10 +1009,16 @@ fn handle_html_updated(
 }
 
 fn handle_read(stream: &mut TcpStream) -> Option<ReadResult> {
+	// TODO: Read HTTP requests bigger than 4K?
 	let mut buf = [0_u8; 4096];
-	let size = stream
-		.read(&mut buf)
-		.unwrap_or_else(|e| panic!("WARNING: Unable to read stream: {}", e));
+	let size = match stream.read(&mut buf) {
+		Ok(size) => size,
+		Err(e) => match e.kind() {
+			ErrorKind::WouldBlock => 0,
+			ErrorKind::ConnectionReset => return None,
+			_ => panic!("Unable to read stream: {}", e),
+		},
+	};
 
 	if size == buf.len() {
 		panic!("Request sizes as large as {} are not supported.", size)

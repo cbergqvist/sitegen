@@ -109,10 +109,14 @@ fn read_stream(
 	mut read_state: ReadState,
 ) -> ReadState {
 	let mut buf = [0_u8; 64 * 1024];
-	let read_size = stream.read(&mut buf).unwrap_or_else(|e| match e.kind() {
-		ErrorKind::WouldBlock => 0,
-		_ => panic!("Failed reading: {}", e),
-	});
+	let read_size = match stream.read(&mut buf) {
+		Ok(size) => size,
+		Err(e) => match e.kind() {
+			ErrorKind::WouldBlock => 0,
+			ErrorKind::ConnectionReset => return ReadState::Close,
+			_ => panic!("Failed reading: {}", e),
+		},
+	};
 
 	let mut buf_offset = 0_usize;
 	loop {
