@@ -51,13 +51,6 @@ Arguments:"
 		return;
 	}
 
-	if !args.watch.value && (args.host.set || args.port.set) {
-		println!(
-			"WARNING: {} or {} arg set without {} arg, so they have no use.",
-			args.host.name, args.port.name, args.watch.name
-		)
-	}
-
 	inner_main(&args.values())
 }
 
@@ -99,7 +92,7 @@ fn inner_main(config: &Config) {
 		)
 	}
 
-	if !config.watch {
+	if !config.watch && !config.deploy {
 		return;
 	}
 
@@ -110,9 +103,6 @@ fn inner_main(config: &Config) {
 		}),
 		Condvar::new(),
 	));
-
-	let root_dir = PathBuf::from(&config.output_dir);
-	let fs_cond_clone = fs_cond.clone();
 	let start_file = find_newest_file(&input_output_map, &config.input_dir)
 		.map(|grouped_file| {
 			strip_prefix(&grouped_file.file.path, &config.output_dir)
@@ -121,14 +111,23 @@ fn inner_main(config: &Config) {
 	spawn_listening_thread(
 		&config.host,
 		config.port,
-		root_dir,
-		fs_cond,
+		PathBuf::from(&config.output_dir),
+		fs_cond.clone(),
 		start_file,
 	);
 
-	// As we start watching some time after we've done initial processing, it is
-	// possible that files get modified in between and changes get lost.
-	watch_fs(&fs_cond_clone, &mut input_output_map, &mut groups, config);
+	if config.deploy {
+		// Just wait for Ctrl+C on main thread
+		loop {
+			thread::sleep(Duration::from_millis(500))
+		}
+	} else {
+		assert!(config.watch);
+
+		// As we start watching some time after we've done initial processing, it is
+		// possible that files get modified in between and changes get lost.
+		watch_fs(&fs_cond, &mut input_output_map, &mut groups, config);
+	}
 }
 
 struct InitialFileSet {

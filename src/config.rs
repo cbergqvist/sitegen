@@ -197,6 +197,13 @@ impl Args {
 			Self::parse_file(&input_dir, bool_args, i16_args, string_args);
 		}
 
+		if !self.watch.value && (self.host.set || self.port.set) {
+			println!(
+				"WARNING: {} or {} arg set without {} arg, so they have no use.",
+				self.host.name, self.port.name, self.watch.name
+			)
+		}
+
 		if self.deploy.value && self.watch.value {
 			panic!("Can't have both deploy and watch mode active at the same time due to possibly changing published states and not all types of files being hot-reloadable.")
 		}
