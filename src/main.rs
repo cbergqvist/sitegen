@@ -58,6 +58,7 @@ fn inner_main(config: &Config) {
 	let mut input_files = markdown::get_files(&config.input_dir);
 	let mut input_output_map;
 	let mut groups;
+	let mut tags;
 
 	if input_files.is_empty() {
 		println!(
@@ -66,6 +67,7 @@ fn inner_main(config: &Config) {
 		);
 		input_output_map = HashMap::new();
 		groups = HashMap::new();
+		tags = HashMap::new();
 	} else {
 		fs::create_dir(&config.output_dir).unwrap_or_else(|e| {
 			panic!(
@@ -83,13 +85,14 @@ fn inner_main(config: &Config) {
 		);
 		input_output_map = fs.input_output_map;
 		groups = fs.groups;
+		tags = fs.tags;
 
 		process_initial_files(
 			&input_files,
 			config,
 			&input_output_map,
 			&groups,
-			&fs.tags,
+			&tags,
 		)
 	}
 
@@ -127,7 +130,13 @@ fn inner_main(config: &Config) {
 
 		// As we start watching some time after we've done initial processing, it is
 		// possible that files get modified in between and changes get lost.
-		watch_fs(&fs_cond, &mut input_output_map, &mut groups, config);
+		watch_fs(
+			&fs_cond,
+			&mut input_output_map,
+			&mut groups,
+			&mut tags,
+			config,
+		);
 	}
 }
 
@@ -688,6 +697,7 @@ fn watch_fs(
 	fs_cond: &Arc<(Mutex<Refresh>, Condvar)>,
 	mut input_output_map: &mut HashMap<PathBuf, GroupedOptionOutputFile>,
 	groups: &mut HashMap<String, Vec<InputFile>>,
+	tags: &mut HashMap<String, Vec<InputFile>>,
 	config: &Config,
 ) -> ! {
 	let (tx, rx) = channel();
@@ -709,6 +719,7 @@ fn watch_fs(
 					&relative_path,
 					&mut input_output_map,
 					groups,
+					tags,
 					config,
 				);
 				println!(
@@ -746,6 +757,7 @@ fn get_path_to_refresh(
 	input_file_path: &PathBuf,
 	input_output_map: &mut HashMap<PathBuf, GroupedOptionOutputFile>,
 	groups: &mut HashMap<String, Vec<InputFile>>,
+	tags: &mut HashMap<String, Vec<InputFile>>,
 	config: &Config,
 ) -> Option<String> {
 	let css_extension = OsStr::new(util::CSS_EXTENSION);
@@ -771,8 +783,11 @@ fn get_path_to_refresh(
 		markdown::reindex(
 			input_file_path,
 			&grouped_file,
+			&config.input_dir,
+			&config.output_dir,
 			input_output_map,
 			groups,
+			tags,
 		);
 		if !grouped_file.file.front_matter.published && !config.deploy {
 			return None;

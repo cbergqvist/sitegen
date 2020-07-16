@@ -1,4 +1,4 @@
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::{hash_map::Entry, BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
@@ -346,14 +346,17 @@ pub fn process_file(
 pub fn reindex(
 	input_file_path: &PathBuf,
 	grouped_file: &GroupedOutputFile,
+	input_dir: &PathBuf,
+	output_dir: &PathBuf,
 	input_output_map: &mut HashMap<PathBuf, GroupedOptionOutputFile>,
 	groups: &mut HashMap<String, Vec<InputFile>>,
+	tags: &mut HashMap<String, Vec<InputFile>>,
 ) {
 	let previous = input_output_map
 		.insert(input_file_path.clone(), grouped_file.clone_to_option());
 
 	if let Some(group) = &grouped_file.group {
-		if match previous {
+		if match &previous {
 			Some(previous) => previous.group.as_deref() != Some(group),
 			None => true,
 		} {
@@ -378,14 +381,79 @@ pub fn reindex(
 				}
 			}
 		}
-	} else if let Some(previous) = previous {
-		if let Some(group) = previous.group {
-			let entries = groups.get_mut(&group).unwrap_or_else(|| {
+	} else if let Some(previous) = &previous {
+		if let Some(group) = &previous.group {
+			let entries = groups.get_mut(group).unwrap_or_else(|| {
 				panic!("Expecting to find {} group.", group)
 			});
 			entries.retain(|f| &f.path != input_file_path)
 		}
 	}
+
+	for tag in &grouped_file.file.front_matter.tags {
+		if let Some(previous) = &previous {
+			if let Some(prev_fm) = &previous.file.front_matter {
+				if prev_fm.tags.contains(&tag) {
+					continue;
+				}
+			}
+		}
+
+		let tags_file = PathBuf::from("tags")
+			.join(&tag)
+			.with_extension(util::HTML_EXTENSION);
+		let file = InputFile {
+			front_matter: grouped_file.file.front_matter.clone(),
+			path: input_file_path.clone(),
+		};
+		let entries = match tags.entry(tag.clone()) {
+			Entry::Vacant(ve) => {
+				let prev = input_output_map.insert(
+					input_dir.join(&tags_file),
+					GroupedOptionOutputFile {
+						file: OptionOutputFile {
+							path: output_dir.join(&tags_file),
+							front_matter: Some(FrontMatter {
+								title: format!("Tag: {}", tag),
+								date: None,
+								published: true,
+								edited: None,
+								categories: Vec::new(),
+								tags: Vec::new(),
+								layout: None,
+								custom_attributes: BTreeMap::new(),
+								end_position: 0,
+								subsequent_line: 1,
+							}),
+						},
+						group: None,
+					},
+				);
+				assert!(prev.is_none());
+				ve.insert(vec![file])
+			}
+			Entry::Occupied(oe) => {
+				let v = oe.into_mut();
+				assert!(v.iter().find(|f| f.path == file.path).is_none());
+				v.push(file);
+				v
+			}
+		};
+		entries.sort_by(|lhs, rhs| {
+			rhs.front_matter.date.cmp(&lhs.front_matter.date)
+		});
+
+		generate_tag_file(
+			&input_dir.join(tags_file),
+			entries,
+			&input_dir,
+			&output_dir,
+			input_output_map,
+			groups,
+		);
+	}
+
+	// TODO: Remove when tags are removed?
 }
 
 pub fn process_template_file(
