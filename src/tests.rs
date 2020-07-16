@@ -6,6 +6,8 @@ use crate::front_matter::FrontMatter;
 use crate::liquid;
 use crate::markdown;
 
+use markdown::{GroupedOptionOutputFile, OptionOutputFile};
+
 fn create_front_matter(title: &str, date: Option<&str>) -> FrontMatter {
 	FrontMatter {
 		title: title.to_string(),
@@ -33,9 +35,12 @@ fn test_liquid_link() {
 	let mut input_output_map = HashMap::new();
 	input_output_map.insert(
 		input_file_path.clone(),
-		markdown::OptionOutputFile {
-			front_matter: Some(front_matter.clone()),
-			path: output_file_path.clone(),
+		GroupedOptionOutputFile {
+			file: OptionOutputFile {
+				front_matter: Some(front_matter.clone()),
+				path: output_file_path.clone(),
+			},
+			group: None,
 		},
 	);
 	let groups = HashMap::new();
@@ -78,9 +83,12 @@ fn test_liquid_unfinished() {
 	let mut input_output_map = HashMap::new();
 	input_output_map.insert(
 		input_file_path.clone(),
-		markdown::OptionOutputFile {
-			front_matter: Some(front_matter.clone()),
-			path: output_file_path.clone(),
+		GroupedOptionOutputFile {
+			file: OptionOutputFile {
+				front_matter: Some(front_matter.clone()),
+				path: output_file_path.clone(),
+			},
+			group: None,
 		},
 	);
 	let groups = HashMap::new();
@@ -124,16 +132,22 @@ fn test_liquid_for() {
 	let mut input_output_map = HashMap::new();
 	input_output_map.insert(
 		input_file_path_a.clone(),
-		markdown::OptionOutputFile {
-			front_matter: Some(front_matter_a.clone()),
-			path: output_file_path_a.clone(),
+		GroupedOptionOutputFile {
+			file: OptionOutputFile {
+				front_matter: Some(front_matter_a.clone()),
+				path: output_file_path_a.clone(),
+			},
+			group: None,
 		},
 	);
 	input_output_map.insert(
 		input_file_path_b.clone(),
-		markdown::OptionOutputFile {
-			front_matter: Some(front_matter_b.clone()),
-			path: output_file_path_b.clone(),
+		GroupedOptionOutputFile {
+			file: OptionOutputFile {
+				front_matter: Some(front_matter_b.clone()),
+				path: output_file_path_b.clone(),
+			},
+			group: None,
 		},
 	);
 
@@ -191,9 +205,12 @@ fn test_liquid_date() {
 	let mut input_output_map = HashMap::new();
 	input_output_map.insert(
 		input_file_path.clone(),
-		markdown::OptionOutputFile {
-			front_matter: Some(front_matter.clone()),
-			path: output_file_path.clone(),
+		GroupedOptionOutputFile {
+			file: OptionOutputFile {
+				front_matter: Some(front_matter.clone()),
+				path: output_file_path.clone(),
+			},
+			group: None,
 		},
 	);
 	let groups = HashMap::new();
@@ -235,9 +252,12 @@ fn test_liquid_upcase() {
 	let mut input_output_map = HashMap::new();
 	input_output_map.insert(
 		input_file_path.clone(),
-		markdown::OptionOutputFile {
-			front_matter: Some(front_matter.clone()),
-			path: output_file_path.clone(),
+		GroupedOptionOutputFile {
+			file: OptionOutputFile {
+				front_matter: Some(front_matter.clone()),
+				path: output_file_path.clone(),
+			},
+			group: None,
 		},
 	);
 	let groups = HashMap::new();
@@ -279,9 +299,12 @@ fn test_liquid_upcase_downcase() {
 	let mut input_output_map = HashMap::new();
 	input_output_map.insert(
 		input_file_path.clone(),
-		markdown::OptionOutputFile {
-			front_matter: Some(front_matter.clone()),
-			path: output_file_path.clone(),
+		GroupedOptionOutputFile {
+			file: OptionOutputFile {
+				front_matter: Some(front_matter.clone()),
+				path: output_file_path.clone(),
+			},
+			group: None,
 		},
 	);
 	let groups = HashMap::new();
@@ -326,9 +349,12 @@ These shoes are awesome!
 	let mut input_output_map = HashMap::new();
 	input_output_map.insert(
 		input_file_path.clone(),
-		markdown::OptionOutputFile {
-			front_matter: Some(front_matter.clone()),
-			path: output_file_path.clone(),
+		GroupedOptionOutputFile {
+			file: OptionOutputFile {
+				front_matter: Some(front_matter.clone()),
+				path: output_file_path.clone(),
+			},
+			group: None,
 		},
 	);
 	let groups = HashMap::new();
@@ -371,9 +397,12 @@ fn test_liquid_assign() {
 	let mut input_output_map = HashMap::new();
 	input_output_map.insert(
 		input_file_path.clone(),
-		markdown::OptionOutputFile {
-			front_matter: Some(front_matter.clone()),
-			path: output_file_path.clone(),
+		GroupedOptionOutputFile {
+			file: OptionOutputFile {
+				front_matter: Some(front_matter.clone()),
+				path: output_file_path.clone(),
+			},
+			group: None,
 		},
 	);
 	let groups = HashMap::new();

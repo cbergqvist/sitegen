@@ -8,7 +8,7 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
 use crate::front_matter::FrontMatter;
-use crate::markdown::{InputFile, OptionOutputFile};
+use crate::markdown::{GroupedOptionOutputFile, InputFile};
 use crate::util::{strip_prefix, write_to_stream};
 
 pub struct Context<'a> {
@@ -18,7 +18,7 @@ pub struct Context<'a> {
 	pub html_content: Option<&'a str>,
 	pub root_input_dir: &'a PathBuf,
 	pub root_output_dir: &'a PathBuf,
-	pub input_output_map: &'a HashMap<PathBuf, OptionOutputFile>,
+	pub input_output_map: &'a HashMap<PathBuf, GroupedOptionOutputFile>,
 	pub groups: &'a HashMap<String, Vec<InputFile>>,
 }
 
@@ -1826,6 +1826,7 @@ fn check_and_emit_link(
 			context.input_output_map.keys()
 		),
 	}
+	.file
 	.path;
 
 	write_to_stream(

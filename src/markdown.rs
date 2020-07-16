@@ -13,7 +13,7 @@ use crate::util;
 use crate::util::strip_prefix;
 
 #[derive(Clone)]
-pub struct GroupedOutputFile {
+pub struct GroupedOptionOutputFile {
 	pub file: OptionOutputFile,
 	pub group: Option<String>,
 }
@@ -23,7 +23,7 @@ pub struct ComputedTemplatePath {
 	pub group: Option<String>,
 }
 
-pub struct ComputedOutputPath {
+pub struct GroupedOutputFile {
 	pub file: OutputFile,
 	pub group: Option<String>,
 }
@@ -58,11 +58,16 @@ impl OutputFile {
 			path: self.path,
 		}
 	}
+}
 
-	pub fn clone_to_option(&self) -> OptionOutputFile {
-		OptionOutputFile {
-			front_matter: Some(self.front_matter.clone()),
-			path: self.path.clone(),
+impl GroupedOutputFile {
+	pub fn clone_to_option(&self) -> GroupedOptionOutputFile {
+		GroupedOptionOutputFile {
+			file: OptionOutputFile {
+				front_matter: Some(self.file.front_matter.clone()),
+				path: self.file.path.clone(),
+			},
+			group: self.group.clone(),
 		}
 	}
 }
@@ -231,9 +236,11 @@ fn get_files_recursively(
 
 pub fn process_file(
 	input_file_path: &PathBuf,
+	output_file_path: &PathBuf,
+	front_matter: &FrontMatter,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
+	input_output_map: &HashMap<PathBuf, GroupedOptionOutputFile>,
 	groups: &HashMap<String, Vec<InputFile>>,
 ) -> GeneratedFile {
 	assert_eq!(
@@ -243,27 +250,11 @@ pub fn process_file(
 
 	let timer = Instant::now();
 
-	let output_file =
-		input_output_map.get(input_file_path).unwrap_or_else(|| {
-			panic!(
-				"Failed finding {} in {:?}",
-				input_file_path.display(),
-				input_output_map.keys()
-			)
-		});
-
 	let mut input_file =
 		BufReader::new(fs::File::open(&input_file_path).unwrap_or_else(|e| {
 			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
 		}));
 
-	let output_file_path = &output_file.path;
-	let front_matter = output_file.front_matter.as_ref().unwrap_or_else(|| {
-		panic!(
-			"Expecting at least a default FrontMatter instance on file: {}",
-			output_file_path.display()
-		)
-	});
 	input_file
 		.seek(SeekFrom::Start(front_matter.end_position))
 		.unwrap_or_else(|e| {
@@ -348,141 +339,48 @@ pub fn process_file(
 	}
 }
 
-pub fn reprocess_file(
+pub fn reindex(
 	input_file_path: &PathBuf,
-	root_input_dir: &PathBuf,
-	root_output_dir: &PathBuf,
-	input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
+	grouped_file: &GroupedOutputFile,
+	input_output_map: &mut HashMap<PathBuf, GroupedOptionOutputFile>,
 	groups: &mut HashMap<String, Vec<InputFile>>,
-) -> GeneratedFile {
-	assert_eq!(
-		input_file_path.extension(),
-		Some(OsStr::new(util::MARKDOWN_EXTENSION))
-	);
+) {
+	let previous = input_output_map
+		.insert(input_file_path.clone(), grouped_file.clone_to_option());
 
-	let timer = Instant::now();
+	if let Some(group) = &grouped_file.group {
+		if match previous {
+			Some(previous) => previous.group.as_deref() != Some(&group),
+			None => true,
+		} {
+			let input_file_rec = InputFile {
+				path: input_file_path.clone(),
+				front_matter: grouped_file.file.front_matter.clone(),
+			};
 
-	let grouped_file = parse_fm_and_compute_output_path(
-		input_file_path,
-		root_input_dir,
-		root_output_dir,
-	);
-	let output_file = grouped_file.file;
-	input_output_map
-		.insert(input_file_path.clone(), output_file.clone_to_option());
-
-	// TODO: Remove from previous group, if changing groups.
-	if let Some(group) = grouped_file.group {
-		let input_file_rec = InputFile {
-			path: input_file_path.clone(),
-			front_matter: output_file.front_matter.clone(),
-		};
-
-		match groups.entry(group) {
-			Entry::Vacant(ve) => {
-				ve.insert(vec![input_file_rec]);
-			}
-			Entry::Occupied(oe) => {
-				let v = oe.into_mut();
-				if let Some(e) =
-					v.iter_mut().find(|f| f.path == input_file_rec.path)
-				{
-					*e = input_file_rec
-				} else {
-					v.push(input_file_rec)
+			match groups.entry(group.clone()) {
+				Entry::Vacant(ve) => {
+					ve.insert(vec![input_file_rec]);
+				}
+				Entry::Occupied(oe) => {
+					let v = oe.into_mut();
+					if let Some(e) =
+						v.iter_mut().find(|f| f.path == input_file_rec.path)
+					{
+						*e = input_file_rec
+					} else {
+						v.push(input_file_rec)
+					}
 				}
 			}
 		}
-	}
-
-	let mut input_file =
-		BufReader::new(fs::File::open(&input_file_path).unwrap_or_else(|e| {
-			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
-		}));
-
-	let output_file_path = output_file.path;
-	let front_matter = output_file.front_matter;
-	input_file
-		.seek(SeekFrom::Start(front_matter.end_position))
-		.unwrap_or_else(|e| {
-			panic!("Failed seeking in {}: {}", input_file_path.display(), e)
-		});
-
-	let mut processed_markdown_content = BufWriter::new(Vec::new());
-
-	liquid::process(
-		&mut input_file,
-		&mut processed_markdown_content,
-		HashMap::new(),
-		&liquid::Context {
-			input_file_path,
-			output_file_path: &output_file_path,
-			front_matter: &front_matter,
-			html_content: None,
-			root_input_dir,
-			root_output_dir,
-			input_output_map,
-			groups,
-		},
-	);
-
-	let markdown_content = String::from_utf8_lossy(
-		&processed_markdown_content
-			.into_inner()
-			.unwrap_or_else(|e| panic!("into_inner() failed: {}", e)),
-	)
-	.to_string();
-
-	let mut output_buf = BufWriter::new(Vec::new());
-	let template_path_result =
-		compute_template_path(input_file_path, root_input_dir);
-
-	let mut html_content = String::new();
-	html::push_html(&mut html_content, Parser::new(&markdown_content));
-
-	let mut template_file = BufReader::new(
-		fs::File::open(&template_path_result.path).unwrap_or_else(|e| {
-			panic!(
-				"Failed opening template file {}: {}",
-				template_path_result.path.display(),
-				e
-			)
-		}),
-	);
-
-	liquid::process(
-		&mut template_file,
-		&mut output_buf,
-		HashMap::new(),
-		&liquid::Context {
-			input_file_path: &template_path_result.path,
-			output_file_path: &output_file_path,
-			front_matter: &front_matter,
-			html_content: Some(&html_content),
-			root_input_dir,
-			root_output_dir,
-			input_output_map,
-			groups,
-		},
-	);
-
-	write_buffer_to_file(output_buf.buffer(), &output_file_path);
-
-	println!(
-		"Converted {} to {} (using template {}) in {} ms.",
-		input_file_path.display(),
-		&output_file_path.display(),
-		template_path_result.path.display(),
-		timer.elapsed().as_millis()
-	);
-
-	GeneratedFile {
-		file: OutputFile {
-			front_matter,
-			path: strip_prefix(&output_file_path, root_output_dir),
-		},
-		group: template_path_result.group,
-		html_content,
+	} else if let Some(previous) = previous {
+		if let Some(group) = previous.group {
+			let entries = groups.get_mut(&group).unwrap_or_else(|| {
+				panic!("Expecting to find {} group.", group)
+			});
+			entries.retain(|f| &f.path != input_file_path)
+		}
 	}
 }
 
@@ -490,7 +388,7 @@ pub fn process_template_file(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
+	input_output_map: &HashMap<PathBuf, GroupedOptionOutputFile>,
 	groups: &HashMap<String, Vec<InputFile>>,
 ) {
 	assert_eq!(
@@ -500,7 +398,7 @@ pub fn process_template_file(
 
 	let timer = Instant::now();
 
-	let output_file =
+	let grouped_file =
 		input_output_map.get(input_file_path).unwrap_or_else(|| {
 			panic!(
 				"Failed finding {} in {:?}",
@@ -514,13 +412,14 @@ pub fn process_template_file(
 			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
 		}));
 
-	let output_file_path = &output_file.path;
-	let front_matter = output_file.front_matter.as_ref().unwrap_or_else(|| {
-		panic!(
-			"Expecting at least a default FrontMatter instance on file: {}",
-			output_file_path.display()
-		)
-	});
+	let output_file_path = &grouped_file.file.path;
+	let front_matter =
+		grouped_file.file.front_matter.as_ref().unwrap_or_else(|| {
+			panic!(
+				"Expecting at least a default FrontMatter instance on file: {}",
+				output_file_path.display()
+			)
+		});
 	input_file
 		.seek(SeekFrom::Start(front_matter.end_position))
 		.unwrap_or_else(|e| {
@@ -559,7 +458,7 @@ pub fn reprocess_template_file(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-	input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
+	input_output_map: &mut HashMap<PathBuf, GroupedOptionOutputFile>,
 	groups: &mut HashMap<String, Vec<InputFile>>,
 ) -> PathBuf {
 	assert_eq!(
@@ -569,22 +468,21 @@ pub fn reprocess_template_file(
 
 	let timer = Instant::now();
 
-	let output_file = parse_fm_and_compute_output_path(
+	let grouped_file = parse_fm_and_compute_output_path(
 		input_file_path,
 		root_input_dir,
 		root_output_dir,
-	)
-	.file;
+	);
 	input_output_map
-		.insert(input_file_path.clone(), output_file.clone_to_option());
+		.insert(input_file_path.clone(), grouped_file.clone_to_option());
 
 	let mut input_file =
 		BufReader::new(fs::File::open(&input_file_path).unwrap_or_else(|e| {
 			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
 		}));
 
-	let output_file_path = output_file.path;
-	let front_matter = output_file.front_matter;
+	let output_file_path = grouped_file.file.path;
+	let front_matter = grouped_file.file.front_matter;
 	input_file
 		.seek(SeekFrom::Start(front_matter.end_position))
 		.unwrap_or_else(|e| {
@@ -626,7 +524,7 @@ pub fn generate_tag_file(
 	entries: &[InputFile],
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
+	input_output_map: &HashMap<PathBuf, GroupedOptionOutputFile>,
 	groups: &HashMap<String, Vec<InputFile>>,
 ) {
 	assert_eq!(
@@ -636,7 +534,7 @@ pub fn generate_tag_file(
 
 	let timer = Instant::now();
 
-	let output_file =
+	let grouped_file =
 		input_output_map.get(input_file_path).unwrap_or_else(|| {
 			panic!(
 				"Failed finding {} in {:?}",
@@ -651,13 +549,14 @@ pub fn generate_tag_file(
 			panic!("Failed opening \"{}\": {}.", &template_file.display(), e)
 		}));
 
-	let output_file_path = &output_file.path;
-	let front_matter = output_file.front_matter.as_ref().unwrap_or_else(|| {
-		panic!(
-			"Expecting at least a default FrontMatter instance on file: {}",
-			output_file_path.display()
-		)
-	});
+	let output_file_path = &grouped_file.file.path;
+	let front_matter =
+		grouped_file.file.front_matter.as_ref().unwrap_or_else(|| {
+			panic!(
+				"Expecting at least a default FrontMatter instance on file: {}",
+				output_file_path.display()
+			)
+		});
 
 	let mut output_buf = BufWriter::new(Vec::new());
 
@@ -750,7 +649,7 @@ pub fn parse_fm_and_compute_output_path(
 	input_file_path: &PathBuf,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
-) -> ComputedOutputPath {
+) -> GroupedOutputFile {
 	let mut path = root_output_dir.clone();
 	if input_file_path.starts_with(root_input_dir) {
 		path.push(
@@ -805,7 +704,7 @@ pub fn parse_fm_and_compute_output_path(
 		group = Some(input_file_parent.to_string());
 	}
 
-	ComputedOutputPath {
+	GroupedOutputFile {
 		file: OutputFile { path, front_matter },
 		group,
 	}

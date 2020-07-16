@@ -21,7 +21,8 @@ mod websocket;
 #[cfg(test)]
 mod tests;
 
-use markdown::{GroupedOutputFile, InputFile, OptionOutputFile};
+use config::Config;
+use markdown::{GroupedOptionOutputFile, InputFile, OptionOutputFile};
 use util::{
 	strip_prefix, translate_input_to_output, write_to_stream,
 	write_to_stream_log_count, Refresh,
@@ -60,7 +61,7 @@ Arguments:"
 	inner_main(&args.values())
 }
 
-fn inner_main(config: &config::Config) {
+fn inner_main(config: &Config) {
 	let input_files = markdown::get_files(&config.input_dir);
 	let mut input_output_map;
 	let mut groups;
@@ -128,17 +129,11 @@ fn inner_main(config: &config::Config) {
 
 	// As we start watching some time after we've done initial processing, it is
 	// possible that files get modified in between and changes get lost.
-	watch_fs(
-		&config.input_dir,
-		&config.output_dir,
-		&fs_cond_clone,
-		&mut input_output_map,
-		&mut groups,
-	);
+	watch_fs(&fs_cond_clone, &mut input_output_map, &mut groups, config);
 }
 
 struct InitialFileSet {
-	input_output_map: HashMap<PathBuf, OptionOutputFile>,
+	input_output_map: HashMap<PathBuf, GroupedOptionOutputFile>,
 	groups: HashMap<String, Vec<InputFile>>,
 	tags: HashMap<String, Vec<InputFile>>,
 }
@@ -163,7 +158,7 @@ fn build_initial_fileset(
 		);
 		checked_insert(
 			file_name,
-			GroupedOutputFile {
+			GroupedOptionOutputFile {
 				file: output_file.file.convert_to_option(),
 				group: output_file.group,
 			},
@@ -178,7 +173,7 @@ fn build_initial_fileset(
 		);
 		checked_insert(
 			file_name,
-			GroupedOutputFile {
+			GroupedOptionOutputFile {
 				file: output_file.file.convert_to_option(),
 				group: output_file.group,
 			},
@@ -190,7 +185,7 @@ fn build_initial_fileset(
 	for file_name in &input_files.raw {
 		checked_insert(
 			file_name,
-			GroupedOutputFile {
+			GroupedOptionOutputFile {
 				file: OptionOutputFile {
 					path: translate_input_to_output(
 						file_name, input_dir, output_dir,
@@ -225,7 +220,7 @@ fn build_initial_fileset(
 			.with_extension(util::XML_EXTENSION);
 		checked_insert(
 			&input_dir.join(&xml_file), // virtual input
-			GroupedOutputFile {
+			GroupedOptionOutputFile {
 				file: OptionOutputFile {
 					path: output_dir.join(xml_file),
 					front_matter: None,
@@ -244,7 +239,7 @@ fn build_initial_fileset(
 			.with_extension(util::HTML_EXTENSION);
 		checked_insert(
 			&input_dir.join(&tags_file), // virtual input
-			GroupedOutputFile {
+			GroupedOptionOutputFile {
 				file: OptionOutputFile {
 					path: output_dir.join(tags_file),
 					front_matter: Some(front_matter::FrontMatter {
@@ -273,8 +268,8 @@ fn build_initial_fileset(
 
 fn process_initial_files(
 	input_files: &markdown::InputFileCollection,
-	config: &config::Config,
-	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
+	config: &Config,
+	input_output_map: &HashMap<PathBuf, GroupedOptionOutputFile>,
 	groups: &HashMap<String, Vec<InputFile>>,
 	tags: &HashMap<String, Vec<InputFile>>,
 ) {
@@ -295,32 +290,47 @@ fn process_initial_files(
 			processed_single = true;
 			let feed_map_c = feed_map.clone();
 			let handle = s.spawn(move |_| {
-				let generated = markdown::process_file(
-					file_name,
-					&config.input_dir,
-					&config.output_dir,
-					input_output_map,
-					groups,
-				);
-				if let Some(group) = generated.group {
-					let entry = atom::FeedEntry {
-						front_matter: generated.file.front_matter,
-						html_content: generated.html_content,
-						permalink: generated.file.path,
-					};
-					let mut locked_feed_map =
-						feed_map_c.write().unwrap_or_else(|e| {
-							panic!(
-								"Failed acquiring feed map write-lock: {}",
-								e
-							)
-						});
-					match locked_feed_map.entry(group) {
-						Entry::Vacant(ve) => {
-							ve.insert(vec![entry]);
+				if let Some((front_matter, output_file_path)) =
+					get_front_matter_and_output_path(
+						file_name,
+						input_output_map,
+						config.deploy,
+					) {
+					let generated = markdown::process_file(
+						file_name,
+						output_file_path,
+						front_matter,
+						&config.input_dir,
+						&config.output_dir,
+						input_output_map,
+						groups,
+					);
+					if let Some(group) = generated.group {
+						let entry = atom::FeedEntry {
+							front_matter: generated.file.front_matter,
+							html_content: generated.html_content,
+							permalink: generated.file.path,
+						};
+						let mut locked_feed_map =
+							feed_map_c.write().unwrap_or_else(|e| {
+								panic!(
+									"Failed acquiring feed map write-lock: {}",
+									e
+								)
+							});
+						match locked_feed_map.entry(group) {
+							Entry::Vacant(ve) => {
+								ve.insert(vec![entry]);
+							}
+							Entry::Occupied(oe) => oe.into_mut().push(entry),
 						}
-						Entry::Occupied(oe) => oe.into_mut().push(entry),
 					}
+				} else {
+					println!(
+						"Skipping unpublished file: {}",
+						file_name.display()
+					);
+					return;
 				}
 			});
 			if config.serial {
@@ -460,8 +470,8 @@ fn process_initial_files(
 
 fn checked_insert(
 	key: &PathBuf,
-	value: GroupedOutputFile,
-	path_map: &mut HashMap<PathBuf, OptionOutputFile>,
+	value: GroupedOptionOutputFile,
+	path_map: &mut HashMap<PathBuf, GroupedOptionOutputFile>,
 	group_map: Option<&mut HashMap<String, Vec<InputFile>>>,
 	tags_map: Option<&mut HashMap<String, Vec<InputFile>>>,
 ) {
@@ -470,13 +480,13 @@ fn checked_insert(
 			panic!(
 				"Key {} already had value: {}, when trying to insert: {}",
 				oe.key().display(),
-				oe.get().path.display(),
+				oe.get().file.path.display(),
 				value.file.path.display()
 			);
 		}
 		Entry::Vacant(ve) => {
 			let extension = ve.key().extension().map(OsStr::to_os_string);
-			ve.insert(value.file.clone());
+			ve.insert(value.clone());
 
 			if extension.as_deref()
 				!= Some(OsStr::new(util::MARKDOWN_EXTENSION))
@@ -520,8 +530,36 @@ fn checked_insert(
 	};
 }
 
+fn get_front_matter_and_output_path<'a>(
+	input_path: &PathBuf,
+	input_output_map: &'a HashMap<PathBuf, GroupedOptionOutputFile>,
+	deploy: bool,
+) -> Option<(&'a front_matter::FrontMatter, &'a PathBuf)> {
+	let output_file = input_output_map.get(input_path).unwrap_or_else(|| {
+		panic!(
+			"Failed finding {} among {:?}",
+			input_path.display(),
+			input_output_map.keys()
+		)
+	});
+	let output_file_path = &output_file.file.path;
+	let front_matter =
+		output_file.file.front_matter.as_ref().unwrap_or_else(|| {
+			panic!(
+				"Expecting at least a default FrontMatter instance on file: {}",
+				output_file_path.display()
+			)
+		});
+
+	if !deploy && !front_matter.published {
+		None
+	} else {
+		Some((front_matter, output_file_path))
+	}
+}
+
 fn find_newest_file(
-	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
+	input_output_map: &HashMap<PathBuf, GroupedOptionOutputFile>,
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
 ) -> Option<PathBuf> {
@@ -571,7 +609,7 @@ fn find_newest_file(
 
 		if modified > newest_time {
 			newest_time = modified;
-			newest_file = Some(&output_file.path);
+			newest_file = Some(&output_file.file.path);
 		}
 	}
 
@@ -633,11 +671,10 @@ fn spawn_listening_thread(
 }
 
 fn watch_fs(
-	input_dir: &PathBuf,
-	output_dir: &PathBuf,
 	fs_cond: &Arc<(Mutex<Refresh>, Condvar)>,
-	mut input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
+	mut input_output_map: &mut HashMap<PathBuf, GroupedOptionOutputFile>,
 	groups: &mut HashMap<String, Vec<InputFile>>,
+	config: &Config,
 ) -> ! {
 	let (tx, rx) = channel();
 	let mut watcher =
@@ -646,9 +683,9 @@ fn watch_fs(
 		});
 
 	watcher
-		.watch(&input_dir, RecursiveMode::Recursive)
+		.watch(&config.input_dir, RecursiveMode::Recursive)
 		.unwrap_or_else(|e| {
-			panic!("Unable to watch {}: {}", input_dir.display(), e);
+			panic!("Unable to watch {}: {}", config.input_dir.display(), e);
 		});
 
 	loop {
@@ -659,11 +696,10 @@ fn watch_fs(
 					notify::DebouncedEvent::Write(path)
 					| notify::DebouncedEvent::Create(path) => {
 						let path_to_communicate = get_path_to_refresh(
-							&make_relative(&path, input_dir),
-							input_dir,
-							output_dir,
+							&make_relative(&path, &config.input_dir),
 							&mut input_output_map,
 							groups,
+							config,
 						);
 						println!(
 							"Path to communicate: {:?}",
@@ -693,36 +729,56 @@ fn watch_fs(
 
 fn get_path_to_refresh(
 	input_file_path: &PathBuf,
-	input_dir: &PathBuf,
-	output_dir: &PathBuf,
-	input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
+	input_output_map: &mut HashMap<PathBuf, GroupedOptionOutputFile>,
 	groups: &mut HashMap<String, Vec<InputFile>>,
+	config: &Config,
 ) -> Option<String> {
 	let css_extension = OsStr::new(util::CSS_EXTENSION);
 	let html_extension = OsStr::new(util::HTML_EXTENSION);
 	let markdown_extension = OsStr::new(util::MARKDOWN_EXTENSION);
 
-	fs::create_dir(&output_dir).unwrap_or_else(|e| {
+	fs::create_dir(&config.output_dir).unwrap_or_else(|e| {
 		if e.kind() != ErrorKind::AlreadyExists {
-			panic!("Failed creating \"{}\": {}.", output_dir.display(), e)
+			panic!(
+				"Failed creating \"{}\": {}.",
+				config.output_dir.display(),
+				e
+			)
 		}
 	});
 
 	if input_file_path.extension() == Some(markdown_extension) {
-		let generated_file = markdown::reprocess_file(
+		let grouped_file = markdown::parse_fm_and_compute_output_path(
 			input_file_path,
-			input_dir,
-			output_dir,
+			&config.input_dir,
+			&config.output_dir,
+		);
+		markdown::reindex(
+			input_file_path,
+			&grouped_file,
+			input_output_map,
+			groups,
+		);
+		if !grouped_file.file.front_matter.published && !config.deploy {
+			return None;
+		}
+
+		let generated_file = markdown::process_file(
+			input_file_path,
+			&grouped_file.file.path,
+			&grouped_file.file.front_matter,
+			&config.input_dir,
+			&config.output_dir,
 			input_output_map,
 			groups,
 		);
 		if let Some(group) = generated_file.group {
-			let index_file = input_dir.join(group).join("index.html");
+			let index_file = config.input_dir.join(group).join("index.html");
 			if index_file.exists() {
 				markdown::process_template_file(
 					&index_file,
-					input_dir,
-					output_dir,
+					&config.input_dir,
+					&config.output_dir,
 					input_output_map,
 					groups,
 				);
@@ -730,30 +786,27 @@ fn get_path_to_refresh(
 		}
 		Some(generated_file.file.path.to_string_lossy().to_string())
 	} else if input_file_path.extension() == Some(html_extension) {
-		handle_html_updated(
-			input_file_path,
-			input_dir,
-			output_dir,
-			input_output_map,
-			groups,
-		)
+		handle_html_updated(input_file_path, input_output_map, groups, config)
 	} else if input_file_path.extension() == Some(css_extension) {
 		util::copy_files_with_prefix(
 			&[input_file_path.clone()],
-			input_dir,
-			output_dir,
+			&config.input_dir,
+			&config.output_dir,
 		);
 
 		match input_output_map.entry(input_file_path.clone()) {
 			Entry::Occupied(..) => {}
 			Entry::Vacant(ve) => {
-				ve.insert(OptionOutputFile {
-					path: translate_input_to_output(
-						input_file_path,
-						input_dir,
-						output_dir,
-					),
-					front_matter: None,
+				ve.insert(GroupedOptionOutputFile {
+					file: OptionOutputFile {
+						path: translate_input_to_output(
+							input_file_path,
+							&config.input_dir,
+							&config.output_dir,
+						),
+						front_matter: None,
+					},
+					group: None,
 				});
 			}
 		}
@@ -782,10 +835,9 @@ fn make_relative(input_file_path: &PathBuf, input_dir: &PathBuf) -> PathBuf {
 
 fn handle_html_updated(
 	input_file_path: &PathBuf,
-	input_dir: &PathBuf,
-	output_dir: &PathBuf,
-	input_output_map: &mut HashMap<PathBuf, OptionOutputFile>,
+	input_output_map: &mut HashMap<PathBuf, GroupedOptionOutputFile>,
 	groups: &mut HashMap<String, Vec<InputFile>>,
+	config: &Config,
 ) -> Option<String> {
 	let parent_path = input_file_path.parent().unwrap_or_else(|| {
 		panic!(
@@ -806,7 +858,7 @@ fn handle_html_updated(
 			});
 		let mut dir_name = OsString::from(template_file_stem);
 		dir_name.push("s");
-		let markdown_dir = input_dir.join(dir_name);
+		let markdown_dir = config.input_dir.join(dir_name);
 		// If for example the post.html template was changed, try to get all
 		// markdown files under /posts/.
 		let files_using_layout = if markdown_dir.exists() {
@@ -818,36 +870,67 @@ fn handle_html_updated(
 		// If we didn't find any markdown files, assume that the template
 		// file just exists for the sake of a single markdown file.
 		if files_using_layout.is_empty() {
-			let templated_file = input_dir
+			let templated_file = config
+				.input_dir
 				.join(template_file_stem)
 				.with_extension(util::MARKDOWN_EXTENSION);
 			if templated_file.exists() {
-				Some(
-					markdown::process_file(
+				if let Some((front_matter, output_file_path)) =
+					get_front_matter_and_output_path(
 						&templated_file,
-						input_dir,
-						output_dir,
 						input_output_map,
-						groups,
+						config.deploy,
+					) {
+					Some(
+						markdown::process_file(
+							&templated_file,
+							output_file_path,
+							front_matter,
+							&config.input_dir,
+							&config.output_dir,
+							input_output_map,
+							groups,
+						)
+						.file
+						.path
+						.to_string_lossy()
+						.to_string(),
 					)
-					.file
-					.path
-					.to_string_lossy()
-					.to_string(),
-				)
+				} else {
+					println!(
+						"Skipping unpublished file: {}",
+						templated_file.display()
+					);
+					None
+				}
 			} else {
 				None
 			}
 		} else {
 			let mut output_files = Vec::new();
 			for file_name in &files_using_layout.markdown {
-				output_files.push(markdown::process_file(
-					file_name,
-					input_dir,
-					output_dir,
-					input_output_map,
-					groups,
-				))
+				if let Some((front_matter, output_file_path)) =
+					get_front_matter_and_output_path(
+						file_name,
+						input_output_map,
+						config.deploy,
+					) {
+					output_files.push(markdown::process_file(
+						file_name,
+						output_file_path,
+						front_matter,
+						&config.input_dir,
+						&config.output_dir,
+						input_output_map,
+						groups,
+					))
+				} else {
+					println!(
+						"Skipping unpublished file: {}",
+						file_name.display()
+					);
+					continue;
+				}
 			}
 
 			output_files
@@ -856,15 +939,27 @@ fn handle_html_updated(
 		}
 	} else if parent_path_file_name == "_includes" {
 		// Since we don't track what includes what, just do a full refresh.
-		let files = markdown::get_files(input_dir);
+		let files = markdown::get_files(&config.input_dir);
 		for file_name in &files.markdown {
-			markdown::process_file(
-				file_name,
-				input_dir,
-				output_dir,
-				input_output_map,
-				groups,
-			);
+			if let Some((front_matter, output_file_path)) =
+				get_front_matter_and_output_path(
+					file_name,
+					input_output_map,
+					config.deploy,
+				) {
+				markdown::process_file(
+					file_name,
+					output_file_path,
+					front_matter,
+					&config.input_dir,
+					&config.output_dir,
+					input_output_map,
+					groups,
+				);
+			} else {
+				println!("Skipping unpublished file: {}", file_name.display());
+				continue;
+			}
 		}
 
 		Some(String::from(util::RELOAD_CURRENT))
@@ -872,8 +967,8 @@ fn handle_html_updated(
 		Some(
 			markdown::reprocess_template_file(
 				input_file_path,
-				input_dir,
-				output_dir,
+				&config.input_dir,
+				&config.output_dir,
 				input_output_map,
 				groups,
 			)
@@ -1154,7 +1249,7 @@ Sitemap: {}
 fn write_sitemap_xml(
 	output_dir: &PathBuf,
 	base_url: &str,
-	input_output_map: &HashMap<PathBuf, OptionOutputFile>,
+	input_output_map: &HashMap<PathBuf, GroupedOptionOutputFile>,
 ) -> String {
 	let official_file_name = PathBuf::from("sitemap.xml");
 	let file_name = output_dir.join(&official_file_name);
@@ -1171,11 +1266,11 @@ fn write_sitemap_xml(
 	let html_extension = OsStr::new(util::HTML_EXTENSION);
 
 	for output_file in input_output_map.values() {
-		if output_file.path.extension() != Some(html_extension) {
+		if output_file.file.path.extension() != Some(html_extension) {
 			continue;
 		}
 
-		let path = strip_prefix(&output_file.path, output_dir);
+		let path = strip_prefix(&output_file.file.path, output_dir);
 		let mut output_url = base_url.to_string();
 		if path.file_name() == Some(OsStr::new("index.html")) {
 			output_url.push_str(&path.with_file_name("").to_string_lossy())
@@ -1194,7 +1289,7 @@ fn write_sitemap_xml(
 			&mut file,
 		);
 
-		if let Some(front_matter) = &output_file.front_matter {
+		if let Some(front_matter) = &output_file.file.front_matter {
 			if let Some(date) = &front_matter.edited {
 				write_to_stream(
 					format!(

@@ -50,6 +50,7 @@ impl fmt::Display for StringArg {
 pub struct Args {
 	pub author: StringArg,
 	pub base_url: StringArg,
+	pub deploy: BoolArg,
 	pub email: StringArg,
 	pub help: BoolArg, // Command line-only, doesn't transfer into Config.
 	pub host: StringArg,
@@ -64,6 +65,7 @@ pub struct Args {
 pub struct Config {
 	pub author: String,
 	pub base_url: String,
+	pub deploy: bool,
 	pub email: String,
 	pub host: String,
 	pub input_dir: PathBuf,
@@ -87,6 +89,12 @@ impl Args {
 				name: "base_url",
 				help: "Set base URL to be used in output files, default is \"http://<host>:<port>/\" but you probably want something like \"http://foo.com/\".",
 				value: String::from("http://127.0.0.1:8090/"),
+				set: false,
+			},
+			deploy: BoolArg {
+				name: "deploy",
+				help: "Deploy site excluding unpublished pages.",
+				value: false,
 				set: false,
 			},
 			email: StringArg {
@@ -147,32 +155,42 @@ impl Args {
 	}
 
 	pub fn parse(&mut self, args: env::Args) {
-		let bool_args =
-			&mut [&mut self.help, &mut self.serial, &mut self.watch];
-		let i16_args = &mut [&mut self.port];
-		let string_args = &mut [
-			&mut self.author,
-			&mut self.base_url,
-			&mut self.email,
-			&mut self.host,
-			&mut self.input,
-			&mut self.output,
-			&mut self.single_file,
-		];
+		{
+			let bool_args = &mut [
+				&mut self.deploy,
+				&mut self.help,
+				&mut self.serial,
+				&mut self.watch,
+			];
+			let i16_args = &mut [&mut self.port];
+			let string_args = &mut [
+				&mut self.author,
+				&mut self.base_url,
+				&mut self.email,
+				&mut self.host,
+				&mut self.input,
+				&mut self.output,
+				&mut self.single_file,
+			];
 
-		Self::parse_cli(args, bool_args, i16_args, string_args);
+			Self::parse_cli(args, bool_args, i16_args, string_args);
 
-		let help_index = 0;
-		assert_eq!(bool_args[help_index].name, "help");
-		if bool_args[help_index].value {
-			return;
+			let help_index = 1;
+			assert_eq!(bool_args[help_index].name, "help");
+			if bool_args[help_index].value {
+				return;
+			}
+
+			let input_index = 4;
+			assert_eq!(string_args[input_index].name, "input");
+			let input_dir = PathBuf::from(&string_args[input_index].value);
+
+			Self::parse_file(&input_dir, bool_args, i16_args, string_args);
 		}
 
-		let input_index = 4;
-		assert_eq!(string_args[input_index].name, "input");
-		let input_dir = PathBuf::from(&string_args[input_index].value);
-
-		Self::parse_file(&input_dir, bool_args, i16_args, string_args);
+		if self.deploy.value && self.watch.value {
+			panic!("Can't have both deploy and watch mode active at the same time due to possibly changing published states and not all types of files being hot-reloadable.")
+		}
 	}
 
 	fn parse_cli(
@@ -399,6 +417,7 @@ impl Args {
 	pub fn print_help(&self) {
 		println!("{}", self.author);
 		println!("{}", self.base_url);
+		println!("{}", self.deploy);
 		println!("{}", self.email);
 		println!("{}", self.help);
 		println!("{}", self.host);
@@ -426,6 +445,7 @@ impl Args {
 		Config {
 			author: self.author.value,
 			base_url,
+			deploy: self.deploy.value,
 			email: self.email.value,
 			host: self.host.value,
 			input_dir: PathBuf::from(self.input.value),

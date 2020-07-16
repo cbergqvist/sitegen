@@ -1,9 +1,12 @@
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::PathBuf;
 
 use yaml_rust::YamlLoader;
+
+use crate::util;
 
 #[derive(Clone)]
 pub struct FrontMatter {
@@ -120,6 +123,13 @@ pub fn parse(
 	}
 
 	fixup_date(input_file_path, &mut result);
+
+	if !result.published
+		&& input_file_path.extension()
+			!= Some(OsStr::new(util::MARKDOWN_EXTENSION))
+	{
+		panic!("Only support turning off publishing for markdown files, found attempt to do it for: {}", input_file_path.display());
+	}
 
 	result
 }
