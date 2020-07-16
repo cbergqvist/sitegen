@@ -88,7 +88,7 @@ impl InputFileCollection {
 	}
 
 	pub fn is_empty(&self) -> bool {
-		self.html.is_empty() || self.markdown.is_empty() || self.raw.is_empty()
+		self.html.is_empty() && self.markdown.is_empty() && self.raw.is_empty()
 	}
 
 	fn append(&mut self, other: &mut Self) {
