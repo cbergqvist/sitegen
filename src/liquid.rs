@@ -1085,13 +1085,7 @@ fn fetch_field(
 					.map_or_else(String::new, String::clone),
 			),
 			"title" => Value::String(context.front_matter.title.clone()),
-			"published" => {
-				Value::String(String::from(if context.front_matter.published {
-					"true"
-				} else {
-					"false"
-				}))
-			}
+			"published" => Value::Boolean(context.front_matter.published),
 			"edited" => Value::String(
 				context
 					.front_matter
