@@ -55,7 +55,7 @@ Arguments:"
 }
 
 fn inner_main(config: &Config) {
-	let input_files = markdown::get_files(&config.input_dir);
+	let mut input_files = markdown::get_files(&config.input_dir);
 	let mut input_output_map;
 	let mut groups;
 
@@ -76,9 +76,10 @@ fn inner_main(config: &Config) {
 		});
 
 		let fs = build_initial_fileset(
-			&input_files,
+			&mut input_files,
 			&config.input_dir,
 			&config.output_dir,
+			config.deploy,
 		);
 		input_output_map = fs.input_output_map;
 		groups = fs.groups;
@@ -137,9 +138,10 @@ struct InitialFileSet {
 }
 
 fn build_initial_fileset(
-	input_files: &markdown::InputFileCollection,
+	input_files: &mut markdown::InputFileCollection,
 	input_dir: &PathBuf,
 	output_dir: &PathBuf,
+	deploying: bool,
 ) -> InitialFileSet {
 	let mut result = InitialFileSet {
 		input_output_map: HashMap::new(),
@@ -150,10 +152,15 @@ fn build_initial_fileset(
 	// First, build up the input -> output map so that later when we do
 	// actual processing of files, we have records of all other files.
 	// This allows us to properly detect broken links.
+	let mut unpublished = Vec::new();
 	for file_name in &input_files.html {
 		let output_file = markdown::parse_fm_and_compute_output_path(
 			file_name, input_dir, output_dir,
 		);
+		if deploying && !output_file.file.front_matter.published {
+			unpublished.push(file_name.clone());
+			continue;
+		}
 		checked_insert(
 			file_name,
 			GroupedOptionOutputFile {
@@ -165,10 +172,17 @@ fn build_initial_fileset(
 			Some(&mut result.tags),
 		)
 	}
+	input_files.html.retain(|f| !unpublished.contains(f));
+
+	let mut unpublished = Vec::new();
 	for file_name in &input_files.markdown {
 		let output_file = markdown::parse_fm_and_compute_output_path(
 			file_name, input_dir, output_dir,
 		);
+		if deploying && !output_file.file.front_matter.published {
+			unpublished.push(file_name.clone());
+			continue;
+		}
 		checked_insert(
 			file_name,
 			GroupedOptionOutputFile {
@@ -180,6 +194,8 @@ fn build_initial_fileset(
 			Some(&mut result.tags),
 		)
 	}
+	input_files.markdown.retain(|f| !unpublished.contains(f));
+
 	for file_name in &input_files.raw {
 		checked_insert(
 			file_name,
