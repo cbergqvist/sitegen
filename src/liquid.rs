@@ -1218,6 +1218,10 @@ fn fetch_value(
 					.to_string_lossy(),
 			);
 			map.insert("link", Value::String(link));
+			map.insert(
+				"published",
+				Value::Boolean(entry.front_matter.published),
+			);
 
 			result.push(Value::Dictionary { map })
 		}
