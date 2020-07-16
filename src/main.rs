@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use std::{env, fs};
 
-use notify::{watcher, RecursiveMode, Watcher};
+use notify::{watcher, DebouncedEvent, RecursiveMode, Watcher};
 
 mod atom;
 mod config;
@@ -676,52 +676,53 @@ fn watch_fs(
 	config: &Config,
 ) -> ! {
 	let (tx, rx) = channel();
-	let mut watcher =
-		watcher(tx, Duration::from_millis(200)).unwrap_or_else(|e| {
-			panic!("Unable to create watcher: {}", e);
-		});
+	let mut watcher = watcher(tx, Duration::from_millis(200))
+		.unwrap_or_else(|e| panic!("Unable to create watcher: {}", e));
 
 	watcher
 		.watch(&config.input_dir, RecursiveMode::Recursive)
 		.unwrap_or_else(|e| {
-			panic!("Unable to watch {}: {}", config.input_dir.display(), e);
+			panic!("Unable to watch {}: {}", config.input_dir.display(), e)
 		});
 
 	loop {
-		match rx.recv() {
-			Ok(event) => {
-				println!("Got {:?}", event);
-				match event {
-					notify::DebouncedEvent::Write(path)
-					| notify::DebouncedEvent::Create(path) => {
-						let path_to_communicate = get_path_to_refresh(
-							&make_relative(&path, &config.input_dir),
-							&mut input_output_map,
-							groups,
-							config,
-						);
-						println!(
-							"Path to communicate: {:?}",
-							path_to_communicate
-						);
-						if path_to_communicate.is_some() {
-							let (mutex, cvar) = &**fs_cond;
+		let event = rx.recv().unwrap_or_else(|e| panic!("Watch error: {}", e));
+		match event {
+			DebouncedEvent::Write(path) | DebouncedEvent::Create(path) => {
+				let relative_path = make_relative(&path, &config.input_dir);
+				let path_to_communicate = get_path_to_refresh(
+					&relative_path,
+					&mut input_output_map,
+					groups,
+					config,
+				);
+				println!(
+					"Path to communicate in response to write/create of {}: {:?}",
+					relative_path.display(), path_to_communicate
+				);
+				if path_to_communicate.is_some() {
+					let (mutex, cvar) = &**fs_cond;
 
-							let mut refresh =
-								mutex.lock().unwrap_or_else(|e| {
-									panic!("Failed locking mutex: {}", e)
-								});
-							refresh.file = path_to_communicate;
-							refresh.index += 1;
-							cvar.notify_all();
-						}
-					}
-					_ => {
-						println!("Skipping event.");
-					}
+					let mut refresh = mutex.lock().unwrap_or_else(|e| {
+						panic!("Failed locking mutex: {}", e)
+					});
+					refresh.file = path_to_communicate;
+					refresh.index += 1;
+					cvar.notify_all();
 				}
 			}
-			Err(e) => panic!("Watch error: {}", e),
+			DebouncedEvent::Rename(..) | DebouncedEvent::Remove(..) => {
+				panic!("Detected {:?}, we don't support live-updating after such events.", event)
+			}
+			DebouncedEvent::NoticeWrite(..)
+			| DebouncedEvent::NoticeRemove(..)
+			| DebouncedEvent::Chmod(..) => println!("Skipping event: {:?}", event),
+			DebouncedEvent::Rescan => {
+				unimplemented!("Rescanning is not implemented")
+			}
+			DebouncedEvent::Error(e, path) => {
+				panic!("notify encountered error: {}, path: {:?}", e, path)
+			}
 		}
 	}
 }
