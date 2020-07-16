@@ -108,6 +108,10 @@ pub fn get_files(input_dir: &PathBuf) -> InputFileCollection {
 	get_files_recursively(input_dir, &Level::Root)
 }
 
+pub fn get_subdir_files(input_dir: &PathBuf) -> InputFileCollection {
+	get_files_recursively(input_dir, &Level::SubDir)
+}
+
 fn get_files_recursively(
 	input_dir: &PathBuf,
 	level: &Level,

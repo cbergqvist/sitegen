@@ -113,11 +113,10 @@ fn inner_main(config: &Config) {
 
 	let root_dir = PathBuf::from(&config.output_dir);
 	let fs_cond_clone = fs_cond.clone();
-	let start_file = find_newest_file(
-		&input_output_map,
-		&config.input_dir,
-		&config.output_dir,
-	);
+	let start_file = find_newest_file(&input_output_map, &config.input_dir)
+		.map(|grouped_file| {
+			strip_prefix(&grouped_file.file.path, &config.output_dir)
+		});
 
 	spawn_listening_thread(
 		&config.host,
@@ -558,11 +557,10 @@ fn get_front_matter_and_output_path<'a>(
 	}
 }
 
-fn find_newest_file(
-	input_output_map: &HashMap<PathBuf, GroupedOptionOutputFile>,
+fn find_newest_file<'a, T>(
+	input_output_map: &'a HashMap<PathBuf, T>,
 	input_dir: &PathBuf,
-	output_dir: &PathBuf,
-) -> Option<PathBuf> {
+) -> Option<&'a T> {
 	let mut newest_file = None;
 	let mut newest_time = UNIX_EPOCH;
 
@@ -573,7 +571,8 @@ fn find_newest_file(
 
 	let excluded_folder = input_dir.join("tags");
 
-	for (input_file, output_file) in input_output_map {
+	for mapping in input_output_map {
+		let input_file = mapping.0;
 		let extension = if let Some(e) = input_file.extension() {
 			e
 		} else {
@@ -609,15 +608,15 @@ fn find_newest_file(
 
 		if modified > newest_time {
 			newest_time = modified;
-			newest_file = Some(&output_file.file.path);
+			newest_file = Some(mapping);
 		}
 	}
 
-	if let Some(file) = &newest_file {
+	if let Some((file, _)) = &newest_file {
 		println!("Newest file: {}", &file.display());
 	}
 
-	newest_file.map(|p| strip_prefix(p, output_dir))
+	newest_file.map(|p| p.1)
 }
 
 fn spawn_listening_thread(
@@ -859,21 +858,31 @@ fn handle_html_updated(
 		let mut dir_name = OsString::from(template_file_stem);
 		dir_name.push("s");
 		let markdown_dir = config.input_dir.join(dir_name);
-		// If for example the post.html template was changed, try to get all
-		// markdown files under /posts/.
+		// If for example the /_layouts/post.html template was changed, try to
+		// get all markdown files under /posts/.
 		let files_using_layout = if markdown_dir.exists() {
-			markdown::get_files(&markdown_dir)
+			if markdown_dir == config.input_dir {
+				markdown::get_files(&markdown_dir)
+			} else {
+				markdown::get_subdir_files(&markdown_dir)
+			}
 		} else {
 			markdown::InputFileCollection::new()
 		};
 
-		// If we didn't find any markdown files, assume that the template
-		// file just exists for the sake of a single markdown file.
-		if files_using_layout.is_empty() {
+		if files_using_layout.markdown.is_empty() {
 			let templated_file = config
 				.input_dir
 				.join(template_file_stem)
 				.with_extension(util::MARKDOWN_EXTENSION);
+			println!(
+				"Didn't find any markdown files under {}, checking if the \
+				template file {} exists just for the sake of a single markdown \
+				file at: {}",
+				markdown_dir.display(),
+				input_file_path.display(),
+				templated_file.display(),
+			);
 			if templated_file.exists() {
 				if let Some((front_matter, output_file_path)) =
 					get_front_matter_and_output_path(
@@ -907,7 +916,12 @@ fn handle_html_updated(
 				None
 			}
 		} else {
-			let mut output_files = Vec::new();
+			println!(
+				"Found {} files using layout {}.",
+				files_using_layout.markdown.len(),
+				input_file_path.display(),
+			);
+			let mut processed_files = HashMap::new();
 			for file_name in &files_using_layout.markdown {
 				if let Some((front_matter, output_file_path)) =
 					get_front_matter_and_output_path(
@@ -915,15 +929,18 @@ fn handle_html_updated(
 						input_output_map,
 						config.deploy,
 					) {
-					output_files.push(markdown::process_file(
-						file_name,
-						output_file_path,
-						front_matter,
-						&config.input_dir,
-						&config.output_dir,
-						input_output_map,
-						groups,
-					))
+					processed_files.insert(
+						file_name.clone(),
+						markdown::process_file(
+							file_name,
+							output_file_path,
+							front_matter,
+							&config.input_dir,
+							&config.output_dir,
+							input_output_map,
+							groups,
+						),
+					);
 				} else {
 					println!(
 						"Skipping unpublished file: {}",
@@ -933,8 +950,7 @@ fn handle_html_updated(
 				}
 			}
 
-			output_files
-				.first()
+			find_newest_file(&processed_files, &config.input_dir)
 				.map(|g| g.file.path.to_string_lossy().to_string())
 		}
 	} else if parent_path_file_name == "_includes" {

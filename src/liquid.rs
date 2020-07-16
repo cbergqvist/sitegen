@@ -1472,6 +1472,7 @@ fn start_if(
 		context,
 	);
 
+	println!("{:?} => {:?} {} {:?}", parameters, lhs, parameters[1], rhs);
 	match parameters[1].borrow() {
 		"==" => cf_stack.push(ControlFlow::if_new(lhs == rhs)),
 		"!=" => cf_stack.push(ControlFlow::if_new(lhs != rhs)),
