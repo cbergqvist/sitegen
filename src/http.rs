@@ -162,7 +162,8 @@ fn handle_read(stream: &mut TcpStream) -> Option<ReadResult> {
 	)))
 }
 
-const DEV_PAGE_HEADER: &[u8; 1244] = b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html>
+const DEV_PAGE_HEADER: &[u8; 1244] = b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n\
+<html>
 <head>
 <title>Sitegen - Hot reload mode</title>
 <link rel=\"icon\" href=\"data:;base64,iVBORw0KGgo=\">
@@ -211,8 +212,7 @@ BODY {
 <body>
 <div class=\"banner\">Preview, save Markdown file to disk for live reload:</div>
 ";
-const DEV_PAGE_FOOTER: &[u8; 17] = b"</body>
-</html>\r\n";
+const DEV_PAGE_FOOTER: &[u8; 17] = b"</body>\n</html>\r\n";
 
 fn handle_write(
 	mut stream: TcpStream,
@@ -246,8 +246,7 @@ fn handle_write(
 			};
 
 			write_to_stream_log_count(DEV_PAGE_HEADER, &mut stream);
-			write_to_stream_log_count(format!("<iframe name=\"preview\"{} style=\"border: 0; margin: 0; width: 100%; height: 100%\"></iframe>
-	", iframe_src).as_bytes(), &mut stream);
+			write_to_stream_log_count(format!("<iframe name=\"preview\"{} style=\"border: 0; margin: 0; width: 100%; height: 100%\"></iframe>\n", iframe_src).as_bytes(), &mut stream);
 			write_to_stream_log_count(DEV_PAGE_FOOTER, &mut stream);
 		} else {
 			let redirect = if let Some(path) = start_file {
