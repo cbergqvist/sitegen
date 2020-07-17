@@ -4,6 +4,8 @@ use std::{env, fmt, fs};
 
 use yaml_rust::YamlLoader;
 
+use crate::util::SiteInfo;
+
 pub struct BoolArg {
 	pub name: &'static str,
 	pub help: &'static str,
@@ -473,5 +475,11 @@ impl Args {
 			title: self.title.value,
 			watch: self.watch.value,
 		}
+	}
+}
+
+pub fn make_site_info(config: &Config) -> SiteInfo {
+	SiteInfo {
+		title: &config.title,
 	}
 }

@@ -1,6 +1,12 @@
+use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
+use std::time::UNIX_EPOCH;
+
+use crate::front_matter;
+use crate::markdown::GroupedOptionOutputFile;
 
 pub const ASCII_EXTENSION: &str = "asc";
 pub const CSS_EXTENSION: &str = "css";
@@ -17,6 +23,14 @@ pub const RELOAD_CURRENT: &str = "*";
 pub struct Refresh {
 	pub index: u32,
 	pub file: Option<String>,
+}
+
+// Decided not to put email in there because I was worried it would drift away
+// from the public key file linked in my about.md.
+// Decided not to put base URL in there because I want to encourage paths that
+// don't depend on it in html/md files.
+pub struct SiteInfo<'a> {
+	pub title: &'a str,
 }
 
 pub fn write_to_stream<T: Write>(buffer: &[u8], stream: &mut T) {
@@ -99,6 +113,25 @@ pub fn strip_prefix(path: &PathBuf, prefix: &PathBuf) -> PathBuf {
 		.to_path_buf()
 }
 
+pub fn make_relative(
+	input_file_path: &PathBuf,
+	input_dir: &PathBuf,
+) -> PathBuf {
+	assert!(input_file_path.is_absolute());
+	if input_dir.is_absolute() {
+		panic!(
+			"Don't currently handle absolute input dirs: {}",
+			input_dir.display()
+		);
+	}
+
+	let absolute_input_dir = input_dir.canonicalize().unwrap_or_else(|e| {
+		panic!("Canonicalization of {} failed: {}", input_dir.display(), e)
+	});
+
+	input_dir.join(strip_prefix(input_file_path, &absolute_input_dir))
+}
+
 pub fn capitalize(input: &str) -> String {
 	let mut output = String::with_capacity(input.len());
 	let mut chars = input.chars();
@@ -111,4 +144,92 @@ pub fn capitalize(input: &str) -> String {
 		}
 	}
 	output
+}
+
+pub fn find_newest_file<'a, T>(
+	input_output_map: &'a HashMap<PathBuf, T>,
+	input_dir: &PathBuf,
+) -> Option<&'a T> {
+	let mut newest_file = None;
+	let mut newest_time = UNIX_EPOCH;
+
+	let supported_extensions =
+		[OsStr::new(HTML_EXTENSION), OsStr::new(MARKDOWN_EXTENSION)];
+
+	let excluded_folder = input_dir.join("tags");
+
+	for mapping in input_output_map {
+		let input_file = mapping.0;
+		let extension = if let Some(e) = input_file.extension() {
+			e
+		} else {
+			continue;
+		};
+
+		if !supported_extensions.iter().any(|e| e == &extension)
+			|| input_file.starts_with(&excluded_folder)
+		{
+			continue;
+		}
+
+		let unique_path = strip_prefix(input_file, input_dir);
+		if unique_path.starts_with("_") || unique_path.starts_with(".") {
+			continue;
+		}
+
+		let metadata = fs::metadata(input_file).unwrap_or_else(|e| {
+			panic!(
+				"Failed fetching metadata for {}: {}",
+				input_file.display(),
+				e
+			)
+		});
+
+		let modified = metadata.modified().unwrap_or_else(|e| {
+			panic!(
+				"Failed fetching modified time for {}: {}",
+				input_file.display(),
+				e
+			)
+		});
+
+		if modified > newest_time {
+			newest_time = modified;
+			newest_file = Some(mapping);
+		}
+	}
+
+	if let Some((file, _)) = &newest_file {
+		println!("Newest file: {}", &file.display());
+	}
+
+	newest_file.map(|p| p.1)
+}
+
+pub fn get_front_matter_and_output_path<'a>(
+	input_path: &PathBuf,
+	input_output_map: &'a HashMap<PathBuf, GroupedOptionOutputFile>,
+	deploy: bool,
+) -> Option<(&'a front_matter::FrontMatter, &'a PathBuf)> {
+	let output_file = input_output_map.get(input_path).unwrap_or_else(|| {
+		panic!(
+			"Failed finding {} among {:?}",
+			input_path.display(),
+			input_output_map.keys()
+		)
+	});
+	let output_file_path = &output_file.file.path;
+	let front_matter =
+		output_file.file.front_matter.as_ref().unwrap_or_else(|| {
+			panic!(
+				"Expecting at least a default FrontMatter instance on file: {}",
+				output_file_path.display()
+			)
+		});
+
+	if deploy && !front_matter.published {
+		None
+	} else {
+		Some((front_matter, output_file_path))
+	}
 }

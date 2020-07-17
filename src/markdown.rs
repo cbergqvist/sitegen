@@ -10,7 +10,7 @@ use pulldown_cmark::{html, Parser};
 use crate::front_matter::FrontMatter;
 use crate::liquid;
 use crate::util;
-use crate::util::strip_prefix;
+use crate::util::{strip_prefix, SiteInfo};
 
 #[derive(Clone)]
 pub struct GroupedOptionOutputFile {
@@ -49,14 +49,6 @@ pub struct InputFile {
 pub struct OptionOutputFile {
 	pub front_matter: Option<FrontMatter>,
 	pub path: PathBuf,
-}
-
-// Decided not to put email in there because I was worried it would drift away
-// from the public key file linked in my about.md.
-// Decided not to put base URL in there because I want to encourage paths that
-// don't depend on it in html/md files.
-pub struct SiteInfo<'a> {
-	pub title: &'a str,
 }
 
 impl OutputFile {

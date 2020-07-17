@@ -4,11 +4,8 @@ use std::path::PathBuf;
 
 use crate::front_matter::FrontMatter;
 use crate::liquid;
-use crate::markdown;
-
-use markdown::{
-	GroupedOptionOutputFile, InputFile, OptionOutputFile, SiteInfo,
-};
+use crate::markdown::{GroupedOptionOutputFile, InputFile, OptionOutputFile};
+use crate::util::SiteInfo;
 
 fn make_front_matter(title: &str, date: Option<&str>) -> FrontMatter {
 	FrontMatter {

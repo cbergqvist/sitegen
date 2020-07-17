@@ -1,5 +1,5 @@
-use core::cmp::min;
 use std::borrow::Borrow;
+use std::cmp::min;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::ffi::OsStr;
@@ -8,8 +8,8 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
 use crate::front_matter::FrontMatter;
-use crate::markdown::{GroupedOptionOutputFile, InputFile, SiteInfo};
-use crate::util::{strip_prefix, write_to_stream};
+use crate::markdown::{GroupedOptionOutputFile, InputFile};
+use crate::util::{strip_prefix, write_to_stream, SiteInfo};
 
 pub struct Context<'a> {
 	pub input_file_path: &'a PathBuf,
