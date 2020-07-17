@@ -110,7 +110,13 @@ fn inner_main(config: &Config) {
 	));
 	let start_file = find_newest_file(&input_output_map, &config.input_dir)
 		.map(|grouped_file| {
-			strip_prefix(&grouped_file.file.path, &config.output_dir)
+			let path =
+				strip_prefix(&grouped_file.file.path, &config.output_dir);
+			if path.file_name() == Some(OsStr::new("index.html")) {
+				path.with_file_name("")
+			} else {
+				path
+			}
 		});
 
 	spawn_listening_thread(

@@ -1904,19 +1904,10 @@ fn make_relative_link(
 			}),
 	);
 
-	let append_trailing_slash = if linked_output_path_stripped.file_name()
-		== Some(OsStr::new("index.html"))
+	if linked_output_path_stripped.file_name() == Some(OsStr::new("index.html"))
 	{
-		linked_output_path_stripped.pop();
-		true
-	} else {
-		false
-	};
-
-	let mut linked_output_path_stripped_str =
-		linked_output_path_stripped.to_string_lossy().to_string();
-	if append_trailing_slash {
-		linked_output_path_stripped_str.push('/');
+		linked_output_path_stripped =
+			linked_output_path_stripped.with_file_name("")
 	}
 
 	println!(
@@ -1924,8 +1915,8 @@ fn make_relative_link(
 		output_file_path.display(),
 		linked_output_path.display(),
 		prefix_plus_slash,
-		&linked_output_path_stripped_str
+		linked_output_path_stripped.display()
 	);
 
-	linked_output_path_stripped_str
+	linked_output_path_stripped.to_string_lossy().to_string()
 }
