@@ -8,7 +8,7 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
 use crate::front_matter::FrontMatter;
-use crate::markdown::{GroupedOptionOutputFile, InputFile};
+use crate::markdown::{GroupedOptionOutputFile, InputFile, SiteInfo};
 use crate::util::{strip_prefix, write_to_stream};
 
 pub struct Context<'a> {
@@ -20,6 +20,7 @@ pub struct Context<'a> {
 	pub root_output_dir: &'a PathBuf,
 	pub input_output_map: &'a HashMap<PathBuf, GroupedOptionOutputFile>,
 	pub groups: &'a HashMap<String, Vec<InputFile>>,
+	pub site_info: &'a SiteInfo<'a>,
 }
 
 #[derive(Clone)]
@@ -1118,6 +1119,13 @@ fn fetch_field(
 					panic!("Not yet supported field: {}.{}", object, field)
 				}
 			}
+		},
+		"site" => match field {
+			"title" => Value::String(context.site_info.title.to_string()),
+			_ => panic!(
+				"Trying to access unsupported field: {}.{}",
+				object, field
+			),
 		},
 		"forloop" => match field {
 			"first" => {

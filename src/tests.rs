@@ -6,9 +6,11 @@ use crate::front_matter::FrontMatter;
 use crate::liquid;
 use crate::markdown;
 
-use markdown::{GroupedOptionOutputFile, OptionOutputFile};
+use markdown::{
+	GroupedOptionOutputFile, InputFile, OptionOutputFile, SiteInfo,
+};
 
-fn create_front_matter(title: &str, date: Option<&str>) -> FrontMatter {
+fn make_front_matter(title: &str, date: Option<&str>) -> FrontMatter {
 	FrontMatter {
 		title: title.to_string(),
 		date: date.map(|s| s.to_string()),
@@ -27,7 +29,7 @@ fn create_front_matter(title: &str, date: Option<&str>) -> FrontMatter {
 fn test_liquid_link() {
 	let input_file_path = PathBuf::from("./input/virtual_test.md");
 	let output_file_path = PathBuf::from("./output/virtual_test.html");
-	let front_matter = create_front_matter("Title", None);
+	let front_matter = make_front_matter("Title", None);
 	let mut input_file = BufReader::new(Cursor::new(
 		(r#"[Foo]({% link "/virtual_test.md" %})"#).as_bytes(),
 	));
@@ -43,7 +45,6 @@ fn test_liquid_link() {
 			group: None,
 		},
 	);
-	let groups = HashMap::new();
 
 	let mut processed_markdown_content = BufWriter::new(Vec::new());
 	liquid::process(
@@ -58,7 +59,8 @@ fn test_liquid_link() {
 			root_input_dir: &PathBuf::from("./input"),
 			root_output_dir: &PathBuf::from("./output"),
 			input_output_map: &input_output_map,
-			groups: &groups,
+			groups: &HashMap::new(),
+			site_info: &SiteInfo { title: "Site" },
 		},
 	);
 
@@ -77,7 +79,7 @@ fn test_liquid_link() {
 fn test_liquid_unfinished() {
 	let input_file_path = PathBuf::from("./input/virtual_test.md");
 	let output_file_path = PathBuf::from("./output/virtual_test.html");
-	let front_matter = create_front_matter("Title", None);
+	let front_matter = make_front_matter("Title", None);
 	let mut input_file = BufReader::new(Cursor::new((r#"{% "#).as_bytes()));
 
 	let mut input_output_map = HashMap::new();
@@ -91,7 +93,6 @@ fn test_liquid_unfinished() {
 			group: None,
 		},
 	);
-	let groups = HashMap::new();
 
 	let mut processed_markdown_content = BufWriter::new(Vec::new());
 
@@ -108,7 +109,8 @@ fn test_liquid_unfinished() {
 			root_input_dir: &PathBuf::from("./input"),
 			root_output_dir: &PathBuf::from("./output"),
 			input_output_map: &input_output_map,
-			groups: &groups,
+			groups: &HashMap::new(),
+			site_info: &SiteInfo { title: "Site" },
 		},
 	);
 }
@@ -122,8 +124,8 @@ fn test_liquid_for() {
 	let output_file_path_b =
 		PathBuf::from("./output/posts/virtual_test_b.html");
 	let front_matter_a =
-		create_front_matter("Title A", Some("2001-01-19T20:10:01Z"));
-	let front_matter_b = create_front_matter("Title B", None);
+		make_front_matter("Title A", Some("2001-01-19T20:10:01Z"));
+	let front_matter_b = make_front_matter("Title B", None);
 
 	let mut input_file = BufReader::new(Cursor::new(
 		(r#"{% for post in posts %}-{{ post.date }} <a href="{% link post.link %}">{{ post.title }}</a>-{% endfor %}"#).as_bytes(),
@@ -155,11 +157,11 @@ fn test_liquid_for() {
 	groups.insert(
 		"posts".to_string(),
 		vec![
-			markdown::InputFile {
+			InputFile {
 				front_matter: front_matter_a.clone(),
 				path: input_file_path_a.clone(),
 			},
-			markdown::InputFile {
+			InputFile {
 				front_matter: front_matter_b.clone(),
 				path: input_file_path_b.clone(),
 			},
@@ -180,6 +182,7 @@ fn test_liquid_for() {
 			root_output_dir: &PathBuf::from("./output"),
 			input_output_map: &input_output_map,
 			groups: &groups,
+			site_info: &SiteInfo { title: "Site" },
 		},
 	);
 
@@ -195,8 +198,7 @@ fn test_liquid_for() {
 fn test_liquid_date() {
 	let input_file_path = PathBuf::from("./input/virtual_test.md");
 	let output_file_path = PathBuf::from("./output/virtual_test.html");
-	let front_matter =
-		create_front_matter("Title", Some("2001-12-31T24:43:51Z"));
+	let front_matter = make_front_matter("Title", Some("2001-12-31T24:43:51Z"));
 	let mut input_file = BufReader::new(Cursor::new(
 		(r#"{{ page.date | date "%Y-%m-%dT%H:%M:%SZ %y %b %h %B" }}"#)
 			.as_bytes(),
@@ -213,7 +215,6 @@ fn test_liquid_date() {
 			group: None,
 		},
 	);
-	let groups = HashMap::new();
 
 	let mut processed_markdown_content = BufWriter::new(Vec::new());
 	liquid::process(
@@ -228,7 +229,8 @@ fn test_liquid_date() {
 			root_input_dir: &PathBuf::from("./input"),
 			root_output_dir: &PathBuf::from("./output"),
 			input_output_map: &input_output_map,
-			groups: &groups,
+			groups: &HashMap::new(),
+			site_info: &SiteInfo { title: "Site" },
 		},
 	);
 
@@ -244,7 +246,7 @@ fn test_liquid_date() {
 fn test_liquid_upcase() {
 	let input_file_path = PathBuf::from("./input/virtual_test.md");
 	let output_file_path = PathBuf::from("./output/virtual_test.html");
-	let front_matter = create_front_matter("Title", None);
+	let front_matter = make_front_matter("Title", None);
 	let mut input_file = BufReader::new(Cursor::new(
 		(r#"{{ page.title | upcase }}"#).as_bytes(),
 	));
@@ -260,7 +262,6 @@ fn test_liquid_upcase() {
 			group: None,
 		},
 	);
-	let groups = HashMap::new();
 
 	let mut processed_markdown_content = BufWriter::new(Vec::new());
 	liquid::process(
@@ -275,7 +276,8 @@ fn test_liquid_upcase() {
 			root_input_dir: &PathBuf::from("./input"),
 			root_output_dir: &PathBuf::from("./output"),
 			input_output_map: &input_output_map,
-			groups: &groups,
+			groups: &HashMap::new(),
+			site_info: &SiteInfo { title: "Site" },
 		},
 	);
 
@@ -291,7 +293,7 @@ fn test_liquid_upcase() {
 fn test_liquid_upcase_downcase() {
 	let input_file_path = PathBuf::from("./input/virtual_test.md");
 	let output_file_path = PathBuf::from("./output/virtual_test.html");
-	let front_matter = create_front_matter("Title", None);
+	let front_matter = make_front_matter("Title", None);
 	let mut input_file = BufReader::new(Cursor::new(
 		(r#"{{ page.title | upcase | downcase }}"#).as_bytes(),
 	));
@@ -307,7 +309,6 @@ fn test_liquid_upcase_downcase() {
 			group: None,
 		},
 	);
-	let groups = HashMap::new();
 
 	let mut processed_markdown_content = BufWriter::new(Vec::new());
 	liquid::process(
@@ -322,7 +323,8 @@ fn test_liquid_upcase_downcase() {
 			root_input_dir: &PathBuf::from("./input"),
 			root_output_dir: &PathBuf::from("./output"),
 			input_output_map: &input_output_map,
-			groups: &groups,
+			groups: &HashMap::new(),
+			site_info: &SiteInfo { title: "Site" },
 		},
 	);
 
@@ -338,7 +340,7 @@ fn test_liquid_upcase_downcase() {
 fn test_liquid_if() {
 	let input_file_path = PathBuf::from("./input/virtual_test.md");
 	let output_file_path = PathBuf::from("./output/virtual_test.html");
-	let front_matter = create_front_matter("Title", None);
+	let front_matter = make_front_matter("Title", None);
 	let mut input_file = BufReader::new(Cursor::new(
 		(r#"{% if page.title == "Awesome Shoes" %}
 These shoes are awesome!
@@ -357,7 +359,6 @@ These shoes are awesome!
 			group: None,
 		},
 	);
-	let groups = HashMap::new();
 
 	let mut processed_markdown_content = BufWriter::new(Vec::new());
 	liquid::process(
@@ -372,7 +373,8 @@ These shoes are awesome!
 			root_input_dir: &PathBuf::from("./input"),
 			root_output_dir: &PathBuf::from("./output"),
 			input_output_map: &input_output_map,
-			groups: &groups,
+			groups: &HashMap::new(),
+			site_info: &SiteInfo { title: "Site" },
 		},
 	);
 
@@ -388,7 +390,7 @@ These shoes are awesome!
 fn test_liquid_assign() {
 	let input_file_path = PathBuf::from("./input/virtual_test.md");
 	let output_file_path = PathBuf::from("./output/virtual_test.html");
-	let front_matter = create_front_matter("Title", None);
+	let front_matter = make_front_matter("Title", None);
 	let mut input_file = BufReader::new(Cursor::new(
 		(r#"{% assign foo = "Awesome Shoes" %}{% if foo == "Awesome Shoes" %}{% assign bar = "works" %}assign {{ bar }}{% endif %}"#)
 			.as_bytes(),
@@ -405,7 +407,6 @@ fn test_liquid_assign() {
 			group: None,
 		},
 	);
-	let groups = HashMap::new();
 
 	let mut processed_markdown_content = BufWriter::new(Vec::new());
 	liquid::process(
@@ -420,7 +421,8 @@ fn test_liquid_assign() {
 			root_input_dir: &PathBuf::from("./input"),
 			root_output_dir: &PathBuf::from("./output"),
 			input_output_map: &input_output_map,
-			groups: &groups,
+			groups: &HashMap::new(),
+			site_info: &SiteInfo { title: "Site" },
 		},
 	);
 

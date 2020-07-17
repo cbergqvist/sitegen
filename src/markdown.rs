@@ -51,6 +51,14 @@ pub struct OptionOutputFile {
 	pub path: PathBuf,
 }
 
+// Decided not to put email in there because I was worried it would drift away
+// from the public key file linked in my about.md.
+// Decided not to put base URL in there because I want to encourage paths that
+// don't depend on it in html/md files.
+pub struct SiteInfo<'a> {
+	pub title: &'a str,
+}
+
 impl OutputFile {
 	pub fn convert_to_option(self) -> OptionOutputFile {
 		OptionOutputFile {
@@ -246,6 +254,7 @@ pub fn process_file(
 	root_output_dir: &PathBuf,
 	input_output_map: &HashMap<PathBuf, GroupedOptionOutputFile>,
 	groups: &HashMap<String, Vec<InputFile>>,
+	site_info: &SiteInfo,
 ) -> GeneratedFile {
 	assert_eq!(
 		input_file_path.extension(),
@@ -280,6 +289,7 @@ pub fn process_file(
 			root_output_dir,
 			input_output_map,
 			groups,
+			site_info,
 		},
 	);
 
@@ -320,6 +330,7 @@ pub fn process_file(
 			root_output_dir,
 			input_output_map,
 			groups,
+			site_info,
 		},
 	);
 
@@ -351,6 +362,7 @@ pub fn reindex(
 	input_output_map: &mut HashMap<PathBuf, GroupedOptionOutputFile>,
 	groups: &mut HashMap<String, Vec<InputFile>>,
 	tags: &mut HashMap<String, Vec<InputFile>>,
+	site_info: &SiteInfo,
 ) {
 	let previous = input_output_map
 		.insert(input_file_path.clone(), grouped_file.clone_to_option());
@@ -450,6 +462,7 @@ pub fn reindex(
 			output_dir,
 			input_output_map,
 			groups,
+			site_info,
 		);
 	}
 
@@ -462,6 +475,7 @@ pub fn process_template_file(
 	root_output_dir: &PathBuf,
 	input_output_map: &HashMap<PathBuf, GroupedOptionOutputFile>,
 	groups: &HashMap<String, Vec<InputFile>>,
+	site_info: &SiteInfo,
 ) {
 	assert_eq!(
 		input_file_path.extension(),
@@ -513,6 +527,7 @@ pub fn process_template_file(
 			root_output_dir,
 			input_output_map,
 			groups,
+			site_info,
 		},
 	);
 
@@ -532,6 +547,7 @@ pub fn reprocess_template_file(
 	root_output_dir: &PathBuf,
 	input_output_map: &mut HashMap<PathBuf, GroupedOptionOutputFile>,
 	groups: &mut HashMap<String, Vec<InputFile>>,
+	site_info: &SiteInfo,
 ) -> PathBuf {
 	assert_eq!(
 		input_file_path.extension(),
@@ -576,6 +592,7 @@ pub fn reprocess_template_file(
 			root_output_dir,
 			input_output_map,
 			groups,
+			site_info,
 		},
 	);
 
@@ -598,6 +615,7 @@ pub fn generate_tag_file(
 	root_output_dir: &PathBuf,
 	input_output_map: &HashMap<PathBuf, GroupedOptionOutputFile>,
 	groups: &HashMap<String, Vec<InputFile>>,
+	site_info: &SiteInfo,
 ) {
 	assert_eq!(
 		input_file_path.extension(),
@@ -677,6 +695,7 @@ pub fn generate_tag_file(
 			root_output_dir,
 			input_output_map,
 			groups,
+			site_info,
 		},
 	);
 

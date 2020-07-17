@@ -29,11 +29,7 @@ pub fn parse(
 	const MAX_FRONT_MATTER_LINES: u8 = 16;
 
 	let mut result = FrontMatter {
-		title: input_file_path
-			.file_stem()
-			.unwrap_or_else(|| panic!("Failed getting input file name."))
-			.to_string_lossy()
-			.to_string(),
+		title: String::new(),
 		date: None,
 		published: true,
 		edited: None,

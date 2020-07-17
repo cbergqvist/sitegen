@@ -23,7 +23,9 @@ mod websocket;
 mod tests;
 
 use config::Config;
-use markdown::{GroupedOptionOutputFile, InputFile, OptionOutputFile};
+use markdown::{
+	GroupedOptionOutputFile, InputFile, OptionOutputFile, SiteInfo,
+};
 use util::{
 	strip_prefix, translate_input_to_output, write_to_stream,
 	write_to_stream_log_count, Refresh,
@@ -333,6 +335,8 @@ fn process_initial_files(
 						input_output_map,
 						config.deploy,
 					) {
+					// TODO: Understand Rust better so I don't have to create
+					// new copies of SiteInfo all the time.
 					let generated = markdown::process_file(
 						file_name,
 						output_file_path,
@@ -341,6 +345,7 @@ fn process_initial_files(
 						&config.output_dir,
 						input_output_map,
 						groups,
+						&make_site_info(&config),
 					);
 					if let Some(group) = generated.group {
 						let entry = atom::FeedEntry {
@@ -394,6 +399,7 @@ fn process_initial_files(
 					&config.output_dir,
 					input_output_map,
 					groups,
+					&make_site_info(&config),
 				)
 			});
 			if config.serial {
@@ -448,6 +454,7 @@ fn process_initial_files(
 					&config.output_dir,
 					input_output_map,
 					groups,
+					&make_site_info(&config),
 				);
 			});
 			if config.serial {
@@ -797,6 +804,7 @@ fn get_path_to_refresh(
 			&config.input_dir,
 			&config.output_dir,
 		);
+		let site_info = make_site_info(&config);
 		markdown::reindex(
 			input_file_path,
 			&grouped_file,
@@ -805,6 +813,7 @@ fn get_path_to_refresh(
 			input_output_map,
 			groups,
 			tags,
+			&site_info,
 		);
 		if !grouped_file.file.front_matter.published && !config.deploy {
 			return None;
@@ -818,6 +827,7 @@ fn get_path_to_refresh(
 			&config.output_dir,
 			input_output_map,
 			groups,
+			&site_info,
 		);
 		if let Some(group) = generated_file.group {
 			let index_file = config.input_dir.join(group).join("index.html");
@@ -828,6 +838,7 @@ fn get_path_to_refresh(
 					&config.output_dir,
 					input_output_map,
 					groups,
+					&site_info,
 				);
 			}
 		}
@@ -886,6 +897,7 @@ fn handle_html_updated(
 	groups: &mut HashMap<String, Vec<InputFile>>,
 	config: &Config,
 ) -> Option<String> {
+	let site_info = make_site_info(&config);
 	let parent_path = input_file_path.parent().unwrap_or_else(|| {
 		panic!(
 			"Path without a parent directory?: {}",
@@ -947,6 +959,7 @@ fn handle_html_updated(
 							&config.output_dir,
 							input_output_map,
 							groups,
+							&site_info,
 						)
 						.file
 						.path
@@ -987,6 +1000,7 @@ fn handle_html_updated(
 							&config.output_dir,
 							input_output_map,
 							groups,
+							&site_info,
 						),
 					);
 				} else {
@@ -1018,6 +1032,7 @@ fn handle_html_updated(
 					&config.output_dir,
 					input_output_map,
 					groups,
+					&site_info,
 				);
 			} else {
 				println!("Skipping unpublished file: {}", file_name.display())
@@ -1033,6 +1048,7 @@ fn handle_html_updated(
 				&config.output_dir,
 				input_output_map,
 				groups,
+				&site_info,
 			)
 			.to_string_lossy()
 			.to_string(),
@@ -1433,4 +1449,10 @@ fn write_sitemap_xml(
 	let mut result = base_url.to_string();
 	result.push_str(&official_file_name.to_string_lossy());
 	result
+}
+
+fn make_site_info(config: &Config) -> SiteInfo {
+	SiteInfo {
+		title: &config.title,
+	}
 }
