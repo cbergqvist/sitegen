@@ -1,4 +1,5 @@
 // Atom was chosen over RSS as the former has a saner date format.
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufWriter, Write};
@@ -23,16 +24,27 @@ pub struct FeedEntry {
 }
 
 pub fn generate(
-	groups: &HashMap<String, Vec<FeedEntry>>,
+	groups: HashMap<String, Vec<FeedEntry>>,
 	output_dir: &PathBuf,
 	base_url: &str,
 	author: &str,
 	email: &str,
 	title: &str,
 ) {
-	for (group, entries) in groups {
+	for (group, mut entries) in groups {
+		entries.sort_by(|lhs, rhs| {
+			let date_ordering =
+				rhs.front_matter.date.cmp(&lhs.front_matter.date);
+			match date_ordering {
+				Ordering::Less | Ordering::Greater => date_ordering,
+				Ordering::Equal => lhs.permalink.cmp(&rhs.permalink),
+			}
+		});
+
+		// Since entries has already been sorted by now, we just need to find
+		// the first date.
 		let mut latest_update: Option<&String> = None;
-		for entry in entries {
+		for entry in &entries {
 			if let Some(date) = &entry.front_matter.date {
 				if let Some(latest) = latest_update {
 					if latest < date {
@@ -58,14 +70,14 @@ pub fn generate(
 			.with_extension(util::XML_EXTENSION);
 
 		let header = FeedHeader {
-			title: format!("{} - {}", title, util::capitalize(group)),
+			title: format!("{} - {}", title, util::capitalize(&group)),
 			base_url: base_url.to_string(),
 			latest_update: latest_update.cloned(),
 			author_name: author.to_string(),
 			author_email: email.to_string(),
 		};
 
-		generate_feed(&feed_name, &header, entries, output_dir);
+		generate_feed(&feed_name, &header, &entries, output_dir);
 	}
 }
 

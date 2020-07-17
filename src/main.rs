@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{hash_map::Entry, BTreeMap, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::io::{ErrorKind, Read, Write};
@@ -478,9 +479,12 @@ fn process_initial_files(
 			});
 		}
 		atom::generate(
-			&feed_map.read().unwrap_or_else(|e| {
-				panic!("Failed acquiring feed map read-lock: {}", e)
-			}),
+			Arc::try_unwrap(feed_map)
+				.unwrap_or_else(|_arc: Arc<_>| panic!("Failed unwrapping Arc"))
+				.into_inner()
+				.unwrap_or_else(|e| {
+					panic!("Failed acquiring feed map read-lock: {}", e)
+				}),
 			&config.output_dir,
 			&config.base_url,
 			&config.author,
@@ -1334,6 +1338,11 @@ fn write_sitemap_xml(
 	base_url: &str,
 	input_output_map: &HashMap<PathBuf, GroupedOptionOutputFile>,
 ) -> String {
+	struct Entry<'a> {
+		path: String,
+		date: Option<&'a str>,
+	}
+
 	let official_file_name = PathBuf::from("sitemap.xml");
 	let file_name = output_dir.join(&official_file_name);
 	let mut file = fs::File::create(&file_name).unwrap_or_else(|e| {
@@ -1341,13 +1350,13 @@ fn write_sitemap_xml(
 	});
 	write_to_stream(
 		b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">
-",
+<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n",
 		&mut file,
 	);
 
 	let html_extension = OsStr::new(util::HTML_EXTENSION);
 
+	let mut entries = Vec::new();
 	for output_file in input_output_map.values() {
 		if output_file.file.path.extension() != Some(html_extension) {
 			continue;
@@ -1361,53 +1370,54 @@ fn write_sitemap_xml(
 			output_url.push_str(&path.to_string_lossy())
 		}
 
+		let date_entry =
+			if let Some(front_matter) = &output_file.file.front_matter {
+				if let Some(date) = &front_matter.edited {
+					Some(date.as_str())
+				} else if let Some(date) = &front_matter.date {
+					Some(date.as_str())
+				} else {
+					None
+				}
+			} else {
+				None
+			};
+		entries.push(Entry {
+			path: output_url,
+			date: date_entry,
+		});
+	}
+
+	entries.sort_by(|lhs, rhs| {
+		let date_ordering = rhs.date.cmp(&lhs.date);
+		match date_ordering {
+			Ordering::Less | Ordering::Greater => date_ordering,
+			Ordering::Equal => lhs.path.cmp(&rhs.path),
+		}
+	});
+
+	for entry in &entries {
 		write_to_stream(
 			format!(
 				"	<url>
-		<loc>{}</loc>
-",
-				output_url
+		<loc>{}</loc>\n",
+				entry.path
 			)
 			.as_bytes(),
 			&mut file,
 		);
 
-		if let Some(front_matter) = &output_file.file.front_matter {
-			if let Some(date) = &front_matter.edited {
-				write_to_stream(
-					format!(
-						"		<lastmod>{}</lastmod>
-",
-						date
-					)
-					.as_bytes(),
-					&mut file,
-				);
-			} else if let Some(date) = &front_matter.date {
-				write_to_stream(
-					format!(
-						"		<lastmod>{}</lastmod>
-",
-						date
-					)
-					.as_bytes(),
-					&mut file,
-				);
-			}
+		if let Some(date) = entry.date {
+			write_to_stream(
+				format!("		<lastmod>{}</lastmod>\n", date).as_bytes(),
+				&mut file,
+			);
 		}
 
-		write_to_stream(
-			b"	</url>
-",
-			&mut file,
-		);
+		write_to_stream(b"	</url>\n", &mut file);
 	}
 
-	write_to_stream(
-		b"</urlset>
-",
-		&mut file,
-	);
+	write_to_stream(b"</urlset>\n", &mut file);
 	// Avoiding sync_all() for now to be friendlier to disks.
 	file.sync_data().unwrap_or_else(|e| {
 		panic!("Failed sync_data() for \"{}\": {}.", file_name.display(), e)
