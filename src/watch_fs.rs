@@ -115,7 +115,7 @@ fn get_path_to_refresh(
 			tags,
 			&site_info,
 		);
-		if !grouped_file.file.front_matter.published && !config.deploy {
+		if config.deploy && !grouped_file.file.front_matter.published {
 			return None;
 		}
 
