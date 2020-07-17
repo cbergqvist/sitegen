@@ -3,6 +3,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use crate::front_matter;
@@ -210,7 +211,7 @@ pub fn get_front_matter_and_output_path<'a>(
 	input_path: &PathBuf,
 	input_output_map: &'a HashMap<PathBuf, GroupedOptionOutputFile>,
 	deploy: bool,
-) -> Option<(&'a front_matter::FrontMatter, &'a PathBuf)> {
+) -> Option<(&'a Arc<front_matter::FrontMatter>, &'a PathBuf)> {
 	let output_file = input_output_map.get(input_path).unwrap_or_else(|| {
 		panic!(
 			"Failed finding {} among {:?}",

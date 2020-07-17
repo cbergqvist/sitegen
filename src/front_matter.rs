@@ -8,7 +8,6 @@ use yaml_rust::YamlLoader;
 
 use crate::util;
 
-#[derive(Clone)]
 pub struct FrontMatter {
 	pub title: String,
 	pub date: Option<String>,

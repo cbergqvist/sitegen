@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::front_matter;
 use crate::util;
@@ -18,7 +19,7 @@ pub struct FeedHeader {
 }
 
 pub struct FeedEntry {
-	pub front_matter: front_matter::FrontMatter,
+	pub front_matter: Arc<front_matter::FrontMatter>,
 	pub html_content: String,
 	pub permalink: PathBuf,
 }

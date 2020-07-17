@@ -274,7 +274,7 @@ fn build_initial_fileset(
 			GroupedOptionOutputFile {
 				file: OptionOutputFile {
 					path: output_dir.join(tags_file),
-					front_matter: Some(front_matter::FrontMatter {
+					front_matter: Some(Arc::new(front_matter::FrontMatter {
 						title: format!("Tag: {}", tag),
 						date: None,
 						published: true,
@@ -285,7 +285,7 @@ fn build_initial_fileset(
 						custom_attributes: BTreeMap::new(),
 						end_position: 0,
 						subsequent_line: 1,
-					}),
+					})),
 				},
 				group: None,
 			},
@@ -386,14 +386,23 @@ fn process_initial_files(
 
 			processed_single = true;
 			let handle = s.spawn(move |_| {
-				markdown::process_template_file(
-					file_name,
-					&config.input_dir,
-					&config.output_dir,
-					input_output_map,
-					groups,
-					&make_site_info(&config),
-				)
+				if let Some((front_matter, output_file_path)) =
+					get_front_matter_and_output_path(
+						file_name,
+						input_output_map,
+						config.deploy,
+					) {
+					markdown::process_template_file(
+						file_name,
+						output_file_path,
+						front_matter,
+						&config.input_dir,
+						&config.output_dir,
+						input_output_map,
+						groups,
+						&make_site_info(&config),
+					)
+				}
 			});
 			if config.serial {
 				handle.join().unwrap_or_else(|e| {
@@ -534,31 +543,27 @@ fn checked_insert(
 				return;
 			}
 
-			let path = value.file.path;
-			let front_matter = &value.file.front_matter
-						.unwrap_or_else(|| panic!("Expect front matter for grouped files, but didn't get one for {}.", path.display()));
-			if let Some(group_map) = group_map {
-				if let Some(group) = value.group {
-					let file = InputFile {
-						front_matter: front_matter.clone(),
-						path: key.clone(),
-					};
-					match group_map.entry(group) {
+			let front_matter = value.file.front_matter
+				.unwrap_or_else(|| panic!("Expect front matter for grouped files, but didn't get one for {}.", key.display())).clone();
+			let file = InputFile {
+				front_matter,
+				path: key.clone(),
+			};
+
+			if let Some(tags_map) = tags_map {
+				for tag in &file.front_matter.tags {
+					match tags_map.entry(tag.clone()) {
 						Entry::Vacant(ve) => {
-							ve.insert(vec![file]);
+							ve.insert(vec![file.clone()]);
 						}
-						Entry::Occupied(oe) => oe.into_mut().push(file),
+						Entry::Occupied(oe) => oe.into_mut().push(file.clone()),
 					}
 				}
 			}
 
-			if let Some(tags_map) = tags_map {
-				for tag in &front_matter.tags {
-					let file = InputFile {
-						front_matter: front_matter.clone(),
-						path: key.clone(),
-					};
-					match tags_map.entry(tag.clone()) {
+			if let Some(group_map) = group_map {
+				if let Some(group) = value.group {
+					match group_map.entry(group) {
 						Entry::Vacant(ve) => {
 							ve.insert(vec![file]);
 						}

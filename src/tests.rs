@@ -1,14 +1,15 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufReader, BufWriter, Cursor};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::front_matter::FrontMatter;
 use crate::liquid;
 use crate::markdown::{GroupedOptionOutputFile, InputFile, OptionOutputFile};
 use crate::util::SiteInfo;
 
-fn make_front_matter(title: &str, date: Option<&str>) -> FrontMatter {
-	FrontMatter {
+fn make_front_matter(title: &str, date: Option<&str>) -> Arc<FrontMatter> {
+	Arc::new(FrontMatter {
 		title: title.to_string(),
 		date: date.map(|s| s.to_string()),
 		published: true,
@@ -19,7 +20,7 @@ fn make_front_matter(title: &str, date: Option<&str>) -> FrontMatter {
 		custom_attributes: BTreeMap::new(),
 		end_position: 0,
 		subsequent_line: 1,
-	}
+	})
 }
 
 #[test]

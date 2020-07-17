@@ -3,6 +3,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use pulldown_cmark::{html, Parser};
@@ -36,18 +37,19 @@ pub struct GeneratedFile {
 
 #[derive(Clone)]
 pub struct OutputFile {
-	pub front_matter: FrontMatter,
+	pub front_matter: Arc<FrontMatter>,
 	pub path: PathBuf,
 }
 
+#[derive(Clone)]
 pub struct InputFile {
-	pub front_matter: FrontMatter,
+	pub front_matter: Arc<FrontMatter>,
 	pub path: PathBuf,
 }
 
 #[derive(Clone)]
 pub struct OptionOutputFile {
-	pub front_matter: Option<FrontMatter>,
+	pub front_matter: Option<Arc<FrontMatter>>,
 	pub path: PathBuf,
 }
 
@@ -241,7 +243,7 @@ fn get_files_recursively(
 pub fn process_file(
 	input_file_path: &PathBuf,
 	output_file_path: &PathBuf,
-	front_matter: &FrontMatter,
+	front_matter: &Arc<FrontMatter>,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
 	input_output_map: &HashMap<PathBuf, GroupedOptionOutputFile>,
@@ -417,7 +419,7 @@ pub fn reindex(
 					GroupedOptionOutputFile {
 						file: OptionOutputFile {
 							path: output_dir.join(&tags_file),
-							front_matter: Some(FrontMatter {
+							front_matter: Some(Arc::new(FrontMatter {
 								title: format!("Tag: {}", tag),
 								date: None,
 								published: true,
@@ -428,7 +430,7 @@ pub fn reindex(
 								custom_attributes: BTreeMap::new(),
 								end_position: 0,
 								subsequent_line: 1,
-							}),
+							})),
 						},
 						group: None,
 					},
@@ -463,6 +465,8 @@ pub fn reindex(
 
 pub fn process_template_file(
 	input_file_path: &PathBuf,
+	output_file_path: &PathBuf,
+	front_matter: &Arc<FrontMatter>,
 	root_input_dir: &PathBuf,
 	root_output_dir: &PathBuf,
 	input_output_map: &HashMap<PathBuf, GroupedOptionOutputFile>,
@@ -476,28 +480,11 @@ pub fn process_template_file(
 
 	let timer = Instant::now();
 
-	let grouped_file =
-		input_output_map.get(input_file_path).unwrap_or_else(|| {
-			panic!(
-				"Failed finding {} in {:?}",
-				input_file_path.display(),
-				input_output_map.keys()
-			)
-		});
-
 	let mut input_file =
 		BufReader::new(fs::File::open(&input_file_path).unwrap_or_else(|e| {
 			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
 		}));
 
-	let output_file_path = &grouped_file.file.path;
-	let front_matter =
-		grouped_file.file.front_matter.as_ref().unwrap_or_else(|| {
-			panic!(
-				"Expecting at least a default FrontMatter instance on file: {}",
-				output_file_path.display()
-			)
-		});
 	input_file
 		.seek(SeekFrom::Start(front_matter.end_position))
 		.unwrap_or_else(|e| {
@@ -531,73 +518,6 @@ pub fn process_template_file(
 		output_file_path.display(),
 		timer.elapsed().as_millis(),
 	);
-}
-
-pub fn reprocess_template_file(
-	input_file_path: &PathBuf,
-	root_input_dir: &PathBuf,
-	root_output_dir: &PathBuf,
-	input_output_map: &mut HashMap<PathBuf, GroupedOptionOutputFile>,
-	groups: &mut HashMap<String, Vec<InputFile>>,
-	site_info: &SiteInfo,
-) -> PathBuf {
-	assert_eq!(
-		input_file_path.extension(),
-		Some(OsStr::new(util::HTML_EXTENSION))
-	);
-
-	let timer = Instant::now();
-
-	let grouped_file = parse_fm_and_compute_output_path(
-		input_file_path,
-		root_input_dir,
-		root_output_dir,
-	);
-	input_output_map
-		.insert(input_file_path.clone(), grouped_file.clone_to_option());
-
-	let mut input_file =
-		BufReader::new(fs::File::open(&input_file_path).unwrap_or_else(|e| {
-			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
-		}));
-
-	let output_file_path = grouped_file.file.path;
-	let front_matter = grouped_file.file.front_matter;
-	input_file
-		.seek(SeekFrom::Start(front_matter.end_position))
-		.unwrap_or_else(|e| {
-			panic!("Failed seeking in {}: {}", input_file_path.display(), e)
-		});
-
-	let mut output_buf = BufWriter::new(Vec::new());
-
-	liquid::process(
-		&mut input_file,
-		&mut output_buf,
-		HashMap::new(),
-		&liquid::Context {
-			input_file_path,
-			output_file_path: &output_file_path,
-			front_matter: &front_matter,
-			html_content: None,
-			root_input_dir,
-			root_output_dir,
-			input_output_map,
-			groups,
-			site_info,
-		},
-	);
-
-	write_buffer_to_file(output_buf.buffer(), &output_file_path);
-
-	println!(
-		"Processed markdown-less {} to {} in {} ms.",
-		input_file_path.display(),
-		output_file_path.display(),
-		timer.elapsed().as_millis(),
-	);
-
-	strip_prefix(&output_file_path, root_output_dir)
 }
 
 pub fn generate_tag_file(
@@ -767,7 +687,7 @@ pub fn parse_fm_and_compute_output_path(
 		}));
 
 	let front_matter =
-		crate::front_matter::parse(input_file_path, &mut input_file);
+		Arc::new(crate::front_matter::parse(input_file_path, &mut input_file));
 
 	let mut group = None;
 	let input_file_parent = input_file_path

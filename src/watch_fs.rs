@@ -10,11 +10,14 @@ use notify::{watcher, DebouncedEvent, RecursiveMode, Watcher};
 
 use crate::config::{make_site_info, Config};
 use crate::markdown;
-use crate::markdown::{GroupedOptionOutputFile, InputFile, OptionOutputFile};
+use crate::markdown::{
+	parse_fm_and_compute_output_path, GroupedOptionOutputFile, InputFile,
+	OptionOutputFile,
+};
 use crate::util;
 use crate::util::{
 	find_newest_file, get_front_matter_and_output_path, make_relative,
-	translate_input_to_output, Refresh,
+	strip_prefix, translate_input_to_output, Refresh,
 };
 
 pub fn run(
@@ -132,14 +135,23 @@ fn get_path_to_refresh(
 		if let Some(group) = generated_file.group {
 			let index_file = config.input_dir.join(group).join("index.html");
 			if index_file.exists() {
-				markdown::process_template_file(
-					&index_file,
-					&config.input_dir,
-					&config.output_dir,
-					input_output_map,
-					groups,
-					&site_info,
-				);
+				if let Some((front_matter, output_file_path)) =
+					get_front_matter_and_output_path(
+						&index_file,
+						input_output_map,
+						config.deploy,
+					) {
+					markdown::process_template_file(
+						&index_file,
+						output_file_path,
+						front_matter,
+						&config.input_dir,
+						&config.output_dir,
+						input_output_map,
+						groups,
+						&site_info,
+					);
+				}
 			}
 		}
 		Some(generated_file.file.path.to_string_lossy().to_string())
@@ -325,17 +337,28 @@ fn handle_html_updated(
 
 		Some(String::from(util::RELOAD_CURRENT))
 	} else {
+		let grouped_file = parse_fm_and_compute_output_path(
+			input_file_path,
+			&config.input_dir,
+			&config.output_dir,
+		);
+		input_output_map
+			.insert(input_file_path.clone(), grouped_file.clone_to_option());
+		markdown::process_template_file(
+			input_file_path,
+			&grouped_file.file.path,
+			&grouped_file.file.front_matter,
+			&config.input_dir,
+			&config.output_dir,
+			input_output_map,
+			groups,
+			&site_info,
+		);
+
 		Some(
-			markdown::reprocess_template_file(
-				input_file_path,
-				&config.input_dir,
-				&config.output_dir,
-				input_output_map,
-				groups,
-				&site_info,
-			)
-			.to_string_lossy()
-			.to_string(),
+			strip_prefix(&grouped_file.file.path, &config.output_dir)
+				.to_string_lossy()
+				.to_string(),
 		)
 	}
 }
