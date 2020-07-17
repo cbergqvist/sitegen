@@ -112,12 +112,11 @@ fn generate_feed(
 	);
 	write_to_stream(
 		format!(
-			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-<feed xmlns=\"http://www.w3.org/2005/Atom\">
-	<title>{}</title>
-	<link rel=\"self\" href=\"{}\"/>
-	<id>{}</id>
-",
+			"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+			<feed xmlns=\"http://www.w3.org/2005/Atom\">\n\
+			\t<title>{}</title>\n\
+			\t<link rel=\"self\" href=\"{}\"/>\n\
+			\t<id>{}</id>\n",
 			header.title, feed_url, feed_url,
 		)
 		.as_bytes(),
@@ -126,24 +125,17 @@ fn generate_feed(
 
 	if let Some(latest_update) = &header.latest_update {
 		write_to_stream(
-			format!(
-				"	<updated>{}</updated>
-",
-				latest_update,
-			)
-			.as_bytes(),
+			format!("\t<updated>{}</updated>\n", latest_update,).as_bytes(),
 			&mut output,
 		);
 	}
 
 	write_to_stream(
 		format!(
-			"	<author>
-		<name>{}</name>
-		<email>{}</email>
-	</author>
-
-",
+			"\t<author>\n\
+			\t\t<name>{}</name>\n\
+			\t\t<email>{}</email>\n\
+			\t</author>\n",
 			header.author_name, header.author_email
 		)
 		.as_bytes(),
@@ -180,11 +172,11 @@ fn generate_entry(
 
 	write_to_stream(
 		format!(
-			"	<entry>
-		<title>{}</title>
-		<id>{}</id>
-		<link href=\"{}\"/>
-",
+			"\n\
+			\t<entry>\n\
+			\t\t<title>{}</title>\n\
+			\t\t<id>{}</id>\n\
+			\t\t<link href=\"{}\"/>\n",
 			entry.front_matter.title, entry_url, entry_url
 		)
 		.as_bytes(),
@@ -193,35 +185,24 @@ fn generate_entry(
 
 	if let Some(published_date) = &entry.front_matter.date {
 		write_to_stream(
-			format!(
-				"		<published>{}</published>
-",
-				published_date
-			)
-			.as_bytes(),
+			format!("\t\t<published>{}</published>\n", published_date)
+				.as_bytes(),
 			&mut output,
 		);
 	}
 	if let Some(updated_date) = &entry.front_matter.edited {
 		write_to_stream(
-			format!(
-				"		<updated>{}</updated>
-",
-				updated_date
-			)
-			.as_bytes(),
+			format!("\t\t<updated>{}</updated>\n", updated_date).as_bytes(),
 			&mut output,
 		);
 	}
 
 	write_to_stream(
 		format!(
-			"		<content type=\"html\"><![CDATA[
-{}
-]]></content>
-	</entry>
-
-",
+			"\t\t<content type=\"html\"><![CDATA[\
+			{}\
+			]]></content>\n\
+			\t</entry>\n",
 			entry.html_content
 		)
 		.as_bytes(),
