@@ -162,8 +162,11 @@ fn handle_read(stream: &mut TcpStream) -> Option<ReadResult> {
 	)))
 }
 
-const DEV_PAGE_HEADER: &[u8; 1151] = b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html>
-<head><script>
+const DEV_PAGE_HEADER: &[u8; 1244] = b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<html>
+<head>
+<title>Sitegen - Hot reload mode</title>
+<link rel=\"icon\" href=\"data:;base64,iVBORw0KGgo=\">
+<script>
 // Tag on time in order to distinguish different sockets.
 let socket = new WebSocket(\"ws://\" + window.location.hostname + \":\" + window.location.port + \"/chat?now=\" + Date.now())
 socket.onopen = function(e) {
