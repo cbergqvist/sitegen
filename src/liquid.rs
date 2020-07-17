@@ -1611,17 +1611,19 @@ fn start_for<T: Read + Seek>(
 	};
 
 	let limit = if parameters.len() > 3 {
-		if parameters.len() != 5 {
-			panic!("Expected 3 or 5 parameters to for loop of the form \"for .. in .. limit ..\", but got {} parameters.", parameters.len());
+		if parameters.len() != 4 {
+			panic!("Expected 3-4 parameters to for loop of the form \"for .. in .. limit ..\", but got {} parameters.", parameters.len());
 		}
 
-		if parameters[3] != "limit" {
+		let limit_str = if parameters[3].starts_with("limit:") {
+			&parameters[3][6..]
+		} else {
 			panic!(
-				"Expected 4th parameter to for loop to be \"limit\" but got {}",
+				"Expected 4th parameter to for loop to be \"limit:...\" but got {}",
+				parameters[3]
 			);
-		}
+		};
 
-		let limit_str = &parameters[4];
 		limit_str.parse::<usize>().unwrap_or_else(|e| {
 			panic!("Failed converting {} to usize: {}", limit_str, e)
 		})
