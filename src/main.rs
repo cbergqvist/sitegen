@@ -116,12 +116,19 @@ fn inner_main(config: &Config) {
 		&config.host,
 		config.port,
 		PathBuf::from(&config.output_dir),
-		fs_cond.clone(),
+		if config.deploy {
+			None
+		} else {
+			Some(fs_cond.clone())
+		},
 		start_file,
 	);
 
 	if config.deploy {
-		// Just wait for Ctrl+C on main thread
+		println!(
+			"NOT watching file system for changes since we are in deploy mode. \
+			Just serving HTTP requests and wait for Ctrl+C on main thread."
+		);
 		loop {
 			thread::sleep(Duration::from_millis(500))
 		}
@@ -647,7 +654,7 @@ fn spawn_listening_thread(
 	host: &str,
 	port: i16,
 	root_dir: PathBuf,
-	fs_cond: Arc<(Mutex<Refresh>, Condvar)>,
+	fs_cond: Option<Arc<(Mutex<Refresh>, Condvar)>>,
 	start_file: Option<PathBuf>,
 ) -> thread::JoinHandle<()> {
 	let listener = TcpListener::bind(format!("{}:{}", host, port))
@@ -1148,6 +1155,7 @@ fn handle_write(
 	path: &PathBuf,
 	root_dir: &PathBuf,
 	start_file: Option<PathBuf>,
+	sockets_enabled: bool,
 ) {
 	const TEXT_OUTPUT_EXTENSIONS: [&str; 4] = [
 		util::ASCII_EXTENSION,
@@ -1162,20 +1170,37 @@ fn handle_write(
 	];
 
 	if path.to_string_lossy() == "dev" {
-		println!("Requested path is not a file, returning index.");
-		let iframe_src = if let Some(path) = start_file {
-			let mut s = String::from(" src=\"");
-			s.push_str(&path.to_string_lossy());
-			s.push_str("\"");
-			s
-		} else {
-			String::from("")
-		};
+		if sockets_enabled {
+			println!("Requested dev hot-reload path.");
+			let iframe_src = if let Some(path) = start_file {
+				let mut s = String::from(" src=\"");
+				s.push_str(&path.to_string_lossy());
+				s.push_str("\"");
+				s
+			} else {
+				String::from("")
+			};
 
-		write_to_stream_log_count(DEV_PAGE_HEADER, &mut stream);
-		write_to_stream_log_count(format!("<iframe name=\"preview\"{} style=\"border: 0; margin: 0; width: 100%; height: 100%\"></iframe>
-", iframe_src).as_bytes(), &mut stream);
-		write_to_stream_log_count(DEV_PAGE_FOOTER, &mut stream);
+			write_to_stream_log_count(DEV_PAGE_HEADER, &mut stream);
+			write_to_stream_log_count(format!("<iframe name=\"preview\"{} style=\"border: 0; margin: 0; width: 100%; height: 100%\"></iframe>
+	", iframe_src).as_bytes(), &mut stream);
+			write_to_stream_log_count(DEV_PAGE_FOOTER, &mut stream);
+		} else {
+			let redirect = if let Some(path) = start_file {
+				path
+			} else {
+				PathBuf::from("/")
+			};
+			println!("Requested dev hot-reload path but sockets are not enabled, redirecting to: {}", redirect.display());
+			write_to_stream_log_count(
+				format!(
+					"HTTP/1.1 302 Found\r\nLocation: {}\r\n",
+					redirect.display()
+				)
+				.as_bytes(),
+				&mut stream,
+			)
+		}
 		return;
 	}
 
@@ -1257,16 +1282,23 @@ fn handle_write(
 fn handle_client(
 	mut stream: TcpStream,
 	root_dir: &PathBuf,
-	fs_cond: &Arc<(Mutex<Refresh>, Condvar)>,
+	fs_cond: &Option<Arc<(Mutex<Refresh>, Condvar)>>,
 	start_file: Option<PathBuf>,
 ) {
+	let sockets_enabled = fs_cond.is_some();
 	if let Some(result) = handle_read(&mut stream) {
 		match result {
-			ReadResult::GetRequest(path) => {
-				handle_write(stream, &path, root_dir, start_file)
-			}
+			ReadResult::GetRequest(path) => handle_write(
+				stream,
+				&path,
+				root_dir,
+				start_file,
+				sockets_enabled,
+			),
 			ReadResult::WebSocket(key) => {
-				websocket::handle_stream(stream, &key, fs_cond)
+				if let Some(fs_cond) = fs_cond {
+					websocket::handle_stream(stream, &key, fs_cond)
+				}
 			}
 		}
 	}
