@@ -199,10 +199,16 @@ impl Args {
 			Self::parse_file(&input_dir, bool_args, i16_args, string_args);
 		}
 
-		if !self.watch.value && (self.host.set || self.port.set) {
-			println!(
-				"WARNING: {} or {} arg set without {} arg, so they have no use.",
-				self.host.name, self.port.name, self.watch.name
+		if !self.watch.value
+			&& !self.deploy.value
+			&& (self.host.set || self.port.set)
+		{
+			panic!(
+				"{} or {} arg set without {} or {} arg, so they have no use.",
+				self.host.name,
+				self.port.name,
+				self.watch.name,
+				self.deploy.name
 			)
 		}
 
