@@ -393,7 +393,7 @@ pub fn reindex(
 	for tag in &grouped_file.file.front_matter.tags {
 		if let Some(previous) = &previous {
 			if let Some(prev_fm) = &previous.file.front_matter {
-				if prev_fm.tags.contains(&tag) {
+				if prev_fm.tags.contains(tag) {
 					continue;
 				}
 			}
@@ -446,8 +446,8 @@ pub fn reindex(
 		generate_tag_file(
 			&input_dir.join(tags_file),
 			entries,
-			&input_dir,
-			&output_dir,
+			input_dir,
+			output_dir,
 			input_output_map,
 			groups,
 		);
