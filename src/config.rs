@@ -29,19 +29,19 @@ pub struct StringArg {
 
 impl fmt::Display for BoolArg {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "-{} {}", self.name, self.help)
+		write!(f, "--{} {}", self.name, self.help)
 	}
 }
 
 impl fmt::Display for I16Arg {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "-{} {}", self.name, self.help)
+		write!(f, "--{} {}", self.name, self.help)
 	}
 }
 
 impl fmt::Display for StringArg {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "-{} {}", self.name, self.help)
+		write!(f, "--{} {}", self.name, self.help)
 	}
 }
 
