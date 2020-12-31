@@ -185,6 +185,8 @@ fn fixup_date(
 				return;
 			}
 		}
+	} else if let Some(file_name_date) = file_name_date {
+		front_matter.date = Some(format!("{}T00:00:00Z", file_name_date))
 	}
 
 	println!("Published or edited dates not specified or set to \"auto\" in front matter of {}, fetching modified date from file system..", input_file_path.display());
