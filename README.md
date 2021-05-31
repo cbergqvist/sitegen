@@ -2,6 +2,12 @@
 
 Generic static site generator written in Rust.
 
+---
+
+**! This repository was built as a hobby project and has been published early just to prove basic familiarity with Rust. !**
+
+---
+
 Features:
 
 - Built-in local HTTP server with automated browser reload on save
@@ -20,6 +26,7 @@ Not setting the title in the front matter of Markdown files will try to grab it 
 
 - Suffers from skirmishes with the borrow checker due to lack of Rust experience.
 - Kept crate dependencies low in order to keep things nimble and less frail. Also providing more opportunity for experimentation and tuning (whether this is the right call depends on context).
+- Lack of comments.
 
 ## TODO
 
