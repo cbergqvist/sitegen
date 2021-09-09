@@ -102,11 +102,11 @@ fn generate_feed(
 		)
 	});
 
-	let mut feed = fs::File::create(&file_path).unwrap_or_else(|e| {
+	let feed = fs::File::create(&file_path).unwrap_or_else(|e| {
 		panic!("Failed creating {}: {}", file_path.display(), e)
 	});
 
-	let mut output = BufWriter::new(Vec::new());
+	let mut output = BufWriter::new(feed);
 	let feed_url = complete_url(
 		&header.base_url,
 		&strip_prefix(file_path, output_dir).to_string_lossy(),
@@ -149,8 +149,8 @@ fn generate_feed(
 
 	write_to_stream(b"</feed>", &mut output);
 
-	feed.write_all(output.buffer()).unwrap_or_else(|e| {
-		panic!("Failed writing to \"{}\": {}.", &file_path.display(), e)
+	let feed = output.into_inner().unwrap_or_else(|e| {
+		panic!("Failed flushing buffered data to feed \"{}\": {}.", &file_path.display(), e)
 	});
 
 	// Avoiding sync_all() for now to be friendlier to disks.
@@ -166,7 +166,7 @@ fn generate_feed(
 fn generate_entry(
 	entry: &FeedEntry,
 	header: &FeedHeader,
-	mut output: &mut BufWriter<Vec<u8>>,
+	mut output: &mut BufWriter<fs::File>,
 ) {
 	let entry_url =
 		complete_url(&header.base_url, &entry.permalink.to_string_lossy());
