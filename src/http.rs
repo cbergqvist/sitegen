@@ -221,12 +221,14 @@ fn handle_write(
 	start_file: Option<PathBuf>,
 	sockets_enabled: bool,
 ) {
-	const TEXT_OUTPUT_EXTENSIONS: [&str; 5] = [
+	const TEXT_OUTPUT_EXTENSIONS: [&str; 4] = [
 		util::ASCII_EXTENSION,
 		util::CSS_EXTENSION,
 		util::HTML_EXTENSION,
-		util::TXT_EXTENSION,
 		util::XML_EXTENSION,
+	];
+	const PLAIN_TEXT_OUTPUT_EXTENSIONS: [&str; 1] = [
+		util::TXT_EXTENSION,
 	];
 	const IMAGE_OUTPUT_EXTENSIONS: [&str; 4] = [
 		util::GIF_EXTENSION,
@@ -298,11 +300,13 @@ fn handle_write(
 
 	if let Some(extension) = full_path.extension() {
 		let extension = extension.to_string_lossy();
-		let content_type = if TEXT_OUTPUT_EXTENSIONS
-			.iter()
-			.any(|&ext| ext == extension)
-		{
+		let content_type = if TEXT_OUTPUT_EXTENSIONS.iter()
+			.any(|&ext| ext == extension) {
 			format!("text/{}", extension)
+		} else if PLAIN_TEXT_OUTPUT_EXTENSIONS
+			.iter()
+			.any(|&ext| ext == extension) {
+			String::from("text/plain")
 		} else if IMAGE_OUTPUT_EXTENSIONS.iter().any(|&ext| ext == extension) {
 			format!("image/{}", extension)
 		} else {
