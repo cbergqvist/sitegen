@@ -13,9 +13,11 @@ pub const ASCII_EXTENSION: &str = "asc";
 pub const CSS_EXTENSION: &str = "css";
 pub const GIF_EXTENSION: &str = "gif";
 pub const HTML_EXTENSION: &str = "html";
+pub const JPEG_EXTENSION: &str = "jpeg";
 pub const JPG_EXTENSION: &str = "jpg";
 pub const MARKDOWN_EXTENSION: &str = "md";
 pub const PNG_EXTENSION: &str = "png";
+pub const TXT_EXTENSION: &str = "txt";
 pub const XML_EXTENSION: &str = "xml";
 
 // Special identifier making JavaScript reload the current page.

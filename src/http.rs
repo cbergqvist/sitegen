@@ -221,14 +221,16 @@ fn handle_write(
 	start_file: Option<PathBuf>,
 	sockets_enabled: bool,
 ) {
-	const TEXT_OUTPUT_EXTENSIONS: [&str; 4] = [
+	const TEXT_OUTPUT_EXTENSIONS: [&str; 5] = [
 		util::ASCII_EXTENSION,
 		util::CSS_EXTENSION,
 		util::HTML_EXTENSION,
+		util::TXT_EXTENSION,
 		util::XML_EXTENSION,
 	];
-	const IMAGE_OUTPUT_EXTENSIONS: [&str; 3] = [
+	const IMAGE_OUTPUT_EXTENSIONS: [&str; 4] = [
 		util::GIF_EXTENSION,
+		util::JPEG_EXTENSION,
 		util::JPG_EXTENSION,
 		util::PNG_EXTENSION,
 	];
