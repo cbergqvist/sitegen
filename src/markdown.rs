@@ -328,7 +328,12 @@ pub fn process_file(
 		},
 	);
 
-	write_buffer_to_file(output_buf.buffer(), output_file_path);
+	write_buffer_to_file(
+		&output_buf
+			.into_inner()
+			.unwrap_or_else(|e| panic!("Failed unwrapping BufWriter: {}", e)),
+		output_file_path,
+	);
 
 	println!(
 		"Converted {} to {} (using template {}) in {} ms.",
@@ -510,7 +515,12 @@ pub fn process_template_file(
 		},
 	);
 
-	write_buffer_to_file(output_buf.buffer(), output_file_path);
+	write_buffer_to_file(
+		&output_buf
+			.into_inner()
+			.unwrap_or_else(|e| panic!("Failed unwrapping BufWriter: {}", e)),
+		output_file_path,
+	);
 
 	println!(
 		"Processed markdown-less {} to {} in {} ms.",
@@ -611,7 +621,12 @@ pub fn generate_tag_file(
 		},
 	);
 
-	write_buffer_to_file(output_buf.buffer(), output_file_path);
+	write_buffer_to_file(
+		&output_buf
+			.into_inner()
+			.unwrap_or_else(|e| panic!("Failed unwrapping BufWriter: {}", e)),
+		output_file_path,
+	);
 
 	println!(
 		"Generated tags file {} in {} ms.",
