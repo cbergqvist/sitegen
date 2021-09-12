@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use pulldown_cmark::{html, Parser, Options};
+use pulldown_cmark::{html, Options, Parser};
 
 use crate::front_matter::FrontMatter;
 use crate::liquid;
@@ -299,7 +299,10 @@ pub fn process_file(
 		compute_template_path(input_file_path, root_input_dir);
 
 	let mut html_content = String::with_capacity(markdown_content.len());
-	html::push_html(&mut html_content, Parser::new_ext(&markdown_content, Options::ENABLE_TABLES));
+	html::push_html(
+		&mut html_content,
+		Parser::new_ext(&markdown_content, Options::ENABLE_TABLES),
+	);
 
 	let mut template_file = BufReader::new(
 		fs::File::open(&template_path_result.path).unwrap_or_else(|e| {

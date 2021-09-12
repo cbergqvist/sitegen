@@ -2,7 +2,7 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufWriter, Write};
+use std::io::BufWriter;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -150,7 +150,11 @@ fn generate_feed(
 	write_to_stream(b"</feed>", &mut output);
 
 	let feed = output.into_inner().unwrap_or_else(|e| {
-		panic!("Failed flushing buffered data to feed \"{}\": {}.", &file_path.display(), e)
+		panic!(
+			"Failed flushing buffered data to feed \"{}\": {}.",
+			&file_path.display(),
+			e
+		)
 	});
 
 	// Avoiding sync_all() for now to be friendlier to disks.
