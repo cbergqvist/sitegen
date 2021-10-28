@@ -1611,7 +1611,7 @@ fn start_for<T: Read + Seek>(
 				s.chars().map(|c| Value::String(c.to_string())).collect()
 			}
 			Value::Boolean(..) | Value::Integer(..) => {
-				panic!("Cannot iterate over one single {:?}.",)
+				panic!("Cannot iterate over one single {:?}.", value)
 			}
 			Value::List { values } => values,
 			Value::Dictionary { map } => map.values().cloned().collect(),
