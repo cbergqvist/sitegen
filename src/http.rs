@@ -210,7 +210,7 @@ BODY {
 </style>
 </head>
 <body>
-<div class=\"banner\">Preview, save Markdown file to disk for live reload:</div>
+<div class=\"banner\">Preview (save Markdown file to disk for live reload)</div>
 ";
 const DEV_PAGE_FOOTER: &[u8; 17] = b"</body>\n</html>\r\n";
 
