@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Seek};
 use std::path::PathBuf;
 
 use yaml_rust::YamlLoader;
@@ -66,7 +66,7 @@ pub fn parse(
 			});
 			if line == "---\n" {
 				result.end_position =
-					reader.seek(SeekFrom::Current(0)).unwrap_or_else(|e| {
+					reader.stream_position().unwrap_or_else(|e| {
 						panic!(
 							"Failed getting current buffer position of file {}: {}",
 							input_file_path.display(),
@@ -144,7 +144,7 @@ fn get_file_name_date(file_stem: &str) -> Option<String> {
 	let mut matching_chars = 0;
 	for (c, p) in file_stem.chars().zip(pattern.chars()) {
 		if !match p {
-			'#' => c >= '0' && c <= '9',
+			'#' => ('0'..='9').contains(&c),
 			_ => c == p,
 		} {
 			break;
@@ -251,7 +251,7 @@ fn fixup_title(
 		} else {
 			file_stem
 		}
-		.replace("_", " "),
+		.replace('_', " "),
 	);
 }
 

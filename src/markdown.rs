@@ -2,6 +2,7 @@ use std::collections::{hash_map::Entry, BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -258,7 +259,7 @@ pub fn process_file(
 	let timer = Instant::now();
 
 	let mut input_file =
-		BufReader::new(fs::File::open(&input_file_path).unwrap_or_else(|e| {
+		BufReader::new(fs::File::open(input_file_path).unwrap_or_else(|e| {
 			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
 		}));
 
@@ -414,7 +415,7 @@ pub fn reindex(
 		}
 
 		let tags_file = PathBuf::from("tags")
-			.join(&tag)
+			.join(tag)
 			.with_extension(util::HTML_EXTENSION);
 		let file = InputFile {
 			front_matter: grouped_file.file.front_matter.clone(),
@@ -448,7 +449,7 @@ pub fn reindex(
 			}
 			Entry::Occupied(oe) => {
 				let v = oe.into_mut();
-				assert!(v.iter().find(|f| f.path == file.path).is_none());
+				assert!(!v.iter().any(|f| f.path == file.path));
 				v.push(file);
 				v
 			}
@@ -489,7 +490,7 @@ pub fn process_template_file(
 	let timer = Instant::now();
 
 	let mut input_file =
-		BufReader::new(fs::File::open(&input_file_path).unwrap_or_else(|e| {
+		BufReader::new(fs::File::open(input_file_path).unwrap_or_else(|e| {
 			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
 		}));
 
@@ -653,7 +654,7 @@ fn write_buffer_to_file(buffer: &[u8], path: &PathBuf) {
 		)
 	});
 
-	let mut output_file = fs::File::create(&path).unwrap_or_else(|e| {
+	let mut output_file = fs::File::create(path).unwrap_or_else(|e| {
 		panic!("Failed creating \"{}\": {}.", &path.display(), e)
 	});
 	output_file.write_all(buffer).unwrap_or_else(|e| {
@@ -700,7 +701,7 @@ pub fn parse_fm_and_compute_output_path(
 	}
 
 	let mut input_file =
-		BufReader::new(fs::File::open(&input_file_path).unwrap_or_else(|e| {
+		BufReader::new(fs::File::open(input_file_path).unwrap_or_else(|e| {
 			panic!("Failed opening \"{}\": {}.", &input_file_path.display(), e)
 		}));
 
@@ -732,7 +733,7 @@ pub fn parse_fm_and_compute_output_path(
 }
 
 fn compute_template_path(
-	input_file_path: &PathBuf,
+	input_file_path: &Path,
 	root_input_dir: &PathBuf,
 ) -> ComputedTemplatePath {
 	let mut template_file_path = root_input_dir.join(PathBuf::from("_layouts"));

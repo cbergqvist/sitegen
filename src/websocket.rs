@@ -104,10 +104,7 @@ pub fn handle_stream(
 
 // Allowing more lines to keep state machine cohesive.
 #[allow(clippy::too_many_lines)]
-fn read_stream(
-	mut stream: &mut TcpStream,
-	mut read_state: ReadState,
-) -> ReadState {
+fn read_stream(stream: &mut TcpStream, mut read_state: ReadState) -> ReadState {
 	let mut buf = [0_u8; 64 * 1024];
 	let read_size = match stream.read(&mut buf) {
 		Ok(size) => size,
@@ -220,7 +217,7 @@ fn read_stream(
 				}
 			}
 			ReadState::PayloadRead { op, payload } => {
-				handle_frame(&mut stream, op, &payload)
+				handle_frame(stream, op, &payload)
 			}
 			ReadState::Close => break,
 		}

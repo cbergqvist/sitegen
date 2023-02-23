@@ -22,7 +22,7 @@ use crate::util::{
 
 pub fn run(
 	fs_cond: &Arc<(Mutex<Refresh>, Condvar)>,
-	mut input_output_map: &mut HashMap<PathBuf, GroupedOptionOutputFile>,
+	input_output_map: &mut HashMap<PathBuf, GroupedOptionOutputFile>,
 	groups: &mut HashMap<String, Vec<InputFile>>,
 	tags: &mut HashMap<String, Vec<InputFile>>,
 	config: &Config,
@@ -44,7 +44,7 @@ pub fn run(
 				let relative_path = make_relative(&path, &config.input_dir);
 				let path_to_communicate = get_path_to_refresh(
 					&relative_path,
-					&mut input_output_map,
+					input_output_map,
 					groups,
 					tags,
 					config,
@@ -107,7 +107,7 @@ fn get_path_to_refresh(
 			&config.input_dir,
 			&config.output_dir,
 		);
-		let site_info = make_site_info(&config);
+		let site_info = make_site_info(config);
 		markdown::reindex(
 			input_file_path,
 			&grouped_file,
@@ -193,7 +193,7 @@ fn handle_html_updated(
 	groups: &mut HashMap<String, Vec<InputFile>>,
 	config: &Config,
 ) -> Option<String> {
-	let site_info = make_site_info(&config);
+	let site_info = make_site_info(config);
 	let parent_path = input_file_path.parent().unwrap_or_else(|| {
 		panic!(
 			"Path without a parent directory?: {}",

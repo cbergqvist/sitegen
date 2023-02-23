@@ -3,13 +3,14 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
 
 use crate::markdown::GroupedOptionOutputFile;
 use crate::util;
 use crate::util::{strip_prefix, write_to_stream};
 
-pub fn write_robots_txt(output_dir: &PathBuf, sitemap_url: &str) {
+pub fn write_robots_txt(output_dir: &Path, sitemap_url: &str) {
 	let file_name = output_dir.join(PathBuf::from("robots.txt"));
 	let mut file = fs::File::create(&file_name).unwrap_or_else(|e| {
 		panic!("Failed creating {}: {}", file_name.display(), e)
@@ -35,7 +36,7 @@ Sitemap: {}
 }
 
 pub fn write_sitemap_xml(
-	output_dir: &PathBuf,
+	output_dir: &Path,
 	base_url: &str,
 	input_output_map: &HashMap<PathBuf, GroupedOptionOutputFile>,
 ) -> String {
@@ -75,11 +76,7 @@ pub fn write_sitemap_xml(
 			if let Some(front_matter) = &output_file.file.front_matter {
 				if let Some(date) = &front_matter.edited {
 					Some(date.as_str())
-				} else if let Some(date) = &front_matter.date {
-					Some(date.as_str())
-				} else {
-					None
-				}
+				} else { front_matter.date.as_deref() }
 			} else {
 				None
 			};

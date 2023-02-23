@@ -241,7 +241,7 @@ fn handle_write(
 			let iframe_src = if let Some(path) = start_file {
 				let mut s = String::from(" src=\"");
 				s.push_str(&path.to_string_lossy());
-				s.push_str("\"");
+				s.push('\"');
 				s
 			} else {
 				String::from("")
@@ -269,7 +269,7 @@ fn handle_write(
 		return;
 	}
 
-	let mut full_path = root_dir.join(&path);
+	let mut full_path = root_dir.join(path);
 	if !full_path.is_file() {
 		let with_index = full_path.join("index.html");
 		if with_index.is_file() {

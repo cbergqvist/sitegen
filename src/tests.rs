@@ -145,7 +145,7 @@ fn test_liquid_for() {
 		GroupedOptionOutputFile {
 			file: OptionOutputFile {
 				front_matter: Some(front_matter_b.clone()),
-				path: output_file_path_b.clone(),
+				path: output_file_path_b,
 			},
 			group: None,
 		},
@@ -160,8 +160,8 @@ fn test_liquid_for() {
 				path: input_file_path_a.clone(),
 			},
 			InputFile {
-				front_matter: front_matter_b.clone(),
-				path: input_file_path_b.clone(),
+				front_matter: front_matter_b,
+				path: input_file_path_b,
 			},
 		],
 	);

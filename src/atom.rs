@@ -102,7 +102,7 @@ fn generate_feed(
 		)
 	});
 
-	let feed = fs::File::create(&file_path).unwrap_or_else(|e| {
+	let feed = fs::File::create(file_path).unwrap_or_else(|e| {
 		panic!("Failed creating {}: {}", file_path.display(), e)
 	});
 

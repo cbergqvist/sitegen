@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -50,7 +51,7 @@ pub fn write_to_stream_log_count<T: Write>(buffer: &[u8], stream: &mut T) {
 pub fn copy_files_with_prefix(
 	files: &[PathBuf],
 	input_dir: &PathBuf,
-	output_dir: &PathBuf,
+	output_dir: &Path,
 ) {
 	let mut input_prefix = input_dir.clone();
 	if let Some(first) = files.first() {
@@ -87,9 +88,9 @@ pub fn copy_files_with_prefix(
 }
 
 pub fn translate_input_to_output(
-	path: &PathBuf,
-	input_dir: &PathBuf,
-	output_dir: &PathBuf,
+	path: &Path,
+	input_dir: &Path,
+	output_dir: &Path,
 ) -> PathBuf {
 	let mut without_prefix = strip_prefix(path, input_dir);
 	if without_prefix.components().next()
@@ -103,7 +104,7 @@ pub fn translate_input_to_output(
 	output_dir.join(without_prefix)
 }
 
-pub fn strip_prefix(path: &PathBuf, prefix: &PathBuf) -> PathBuf {
+pub fn strip_prefix(path: &Path, prefix: &Path) -> PathBuf {
 	path.strip_prefix(prefix)
 		.unwrap_or_else(|e| {
 			panic!(
@@ -116,10 +117,7 @@ pub fn strip_prefix(path: &PathBuf, prefix: &PathBuf) -> PathBuf {
 		.to_path_buf()
 }
 
-pub fn make_relative(
-	input_file_path: &PathBuf,
-	input_dir: &PathBuf,
-) -> PathBuf {
+pub fn make_relative(input_file_path: &Path, input_dir: &Path) -> PathBuf {
 	assert!(input_file_path.is_absolute());
 	if input_dir.is_absolute() {
 		panic!(
@@ -151,7 +149,7 @@ pub fn capitalize(input: &str) -> String {
 
 pub fn find_newest_file<'a, T>(
 	input_output_map: &'a HashMap<PathBuf, T>,
-	input_dir: &PathBuf,
+	input_dir: &Path,
 ) -> Option<&'a T> {
 	let mut newest_file = None;
 	let mut newest_time = UNIX_EPOCH;

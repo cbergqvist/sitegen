@@ -1,5 +1,6 @@
 use std::collections::{hash_map::Entry, BTreeMap, HashMap};
 use std::ffi::OsStr;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread;
@@ -267,7 +268,7 @@ fn build_initial_fileset(
 
 	for tag in result.tags.keys() {
 		let tags_file = PathBuf::from("tags")
-			.join(&tag)
+			.join(tag)
 			.with_extension(util::HTML_EXTENSION);
 		checked_insert(
 			&input_dir.join(&tags_file), // virtual input
@@ -338,7 +339,7 @@ fn process_initial_files(
 						&config.output_dir,
 						input_output_map,
 						groups,
-						&make_site_info(&config),
+						&make_site_info(config),
 					);
 					if let Some(group) = generated.group {
 						let entry = atom::FeedEntry {
@@ -400,7 +401,7 @@ fn process_initial_files(
 						&config.output_dir,
 						input_output_map,
 						groups,
-						&make_site_info(&config),
+						&make_site_info(config),
 					)
 				}
 			});
@@ -439,7 +440,7 @@ fn process_initial_files(
 
 		for (tag, entries) in tags {
 			let tags_file = PathBuf::from("tags")
-				.join(&tag)
+				.join(tag)
 				.with_extension(util::HTML_EXTENSION);
 			if config.single_file.is_some()
 				&& config.single_file.as_deref() != Some(&tags_file)
@@ -456,7 +457,7 @@ fn process_initial_files(
 					&config.output_dir,
 					input_output_map,
 					groups,
-					&make_site_info(&config),
+					&make_site_info(config),
 				);
 			});
 			if config.serial {
@@ -518,13 +519,13 @@ fn process_initial_files(
 }
 
 fn checked_insert(
-	key: &PathBuf,
+	key: &Path,
 	value: GroupedOptionOutputFile,
 	path_map: &mut HashMap<PathBuf, GroupedOptionOutputFile>,
 	group_map: Option<&mut HashMap<String, Vec<InputFile>>>,
 	tags_map: Option<&mut HashMap<String, Vec<InputFile>>>,
 ) {
-	match path_map.entry(key.clone()) {
+	match path_map.entry(key.to_path_buf()) {
 		Entry::Occupied(oe) => {
 			panic!(
 				"Key {} already had value: {}, when trying to insert: {}",
@@ -544,10 +545,10 @@ fn checked_insert(
 			}
 
 			let front_matter = value.file.front_matter
-				.unwrap_or_else(|| panic!("Expect front matter for grouped files, but didn't get one for {}.", key.display())).clone();
+				.unwrap_or_else(|| panic!("Expect front matter for grouped files, but didn't get one for {}.", key.display()));
 			let file = InputFile {
 				front_matter,
-				path: key.clone(),
+				path: key.to_path_buf(),
 			};
 
 			if let Some(tags_map) = tags_map {

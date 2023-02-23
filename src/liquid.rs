@@ -222,7 +222,7 @@ pub fn process<T: Read + Seek>(
 			(s.unwrap_or(false), ci)
 		};
 
-		let mut output_buf = if capture_index == usize::max_value() {
+		let output_buf = if capture_index == usize::max_value() {
 			// TODO: Optimize
 			// Reset capture_buf when we no longer use it.
 			capture_buf = BufWriter::new(Vec::new());
@@ -299,7 +299,7 @@ pub fn process<T: Read + Seek>(
 
 					if !skipping {
 						output_template_value(
-							&mut output_buf,
+							output_buf,
 							&queued_identifiers,
 							&outer_variables,
 							&cf_stack,
@@ -342,7 +342,7 @@ pub fn process<T: Read + Seek>(
 
 					if !skipping {
 						output_template_value(
-							&mut output_buf,
+							output_buf,
 							&queued_identifiers,
 							&outer_variables,
 							&cf_stack,
@@ -406,7 +406,7 @@ pub fn process<T: Read + Seek>(
 							}
 							if !skipping {
 								output_template_value(
-									&mut output_buf,
+									output_buf,
 									&queued_identifiers,
 									&outer_variables,
 									&cf_stack,
@@ -518,7 +518,7 @@ pub fn process<T: Read + Seek>(
 
 					run_function(
 						input_file,
-						&mut output_buf,
+						output_buf,
 						&queued_identifiers,
 						&mut outer_variables,
 						&mut cf_stack,
@@ -564,7 +564,7 @@ pub fn process<T: Read + Seek>(
 
 					run_function(
 						input_file,
-						&mut output_buf,
+						output_buf,
 						&queued_identifiers,
 						&mut outer_variables,
 						&mut cf_stack,
@@ -589,12 +589,12 @@ pub fn process<T: Read + Seek>(
 
 					assert!(current_identifier.is_empty());
 
-					let before_function_pos = input_file.seek(SeekFrom::Current(0)).unwrap_or_else(|e|
+					let before_function_pos = input_file.stream_position().unwrap_or_else(|e|
 						panic!("Failed querying current stream position: {}", e));
 
 					run_function(
 						input_file,
-						&mut output_buf,
+						output_buf,
 						&queued_identifiers,
 						&mut outer_variables,
 						&mut cf_stack,
@@ -606,7 +606,7 @@ pub fn process<T: Read + Seek>(
 					assert!(!parsing_literal);
 					queued_identifiers.clear();
 
-					let end_function_pos = input_file.seek(SeekFrom::Current(0)).unwrap_or_else(|e|
+					let end_function_pos = input_file.stream_position().unwrap_or_else(|e|
 						panic!("Failed querying current stream position: {}", e));
 					state = if before_function_pos == end_function_pos {
 						State::WaitingForCloseBracket
@@ -640,12 +640,12 @@ pub fn process<T: Read + Seek>(
 					current_identifier.pop();
 					assert!(current_identifier.is_empty());
 
-					let before_function_pos = input_file.seek(SeekFrom::Current(0)).unwrap_or_else(|e|
+					let before_function_pos = input_file.stream_position().unwrap_or_else(|e|
 						panic!("Failed querying current stream position: {}", e));
 
 					run_function(
 						input_file,
-						&mut output_buf,
+						output_buf,
 						&queued_identifiers,
 						&mut outer_variables,
 						&mut cf_stack,
@@ -656,7 +656,7 @@ pub fn process<T: Read + Seek>(
 					assert!(current_identifier.is_empty());
 					queued_identifiers.clear();
 
-					let end_function_pos = input_file.seek(SeekFrom::Current(0)).unwrap_or_else(|e|
+					let end_function_pos = input_file.stream_position().unwrap_or_else(|e|
 						panic!("Failed querying current stream position: {}", e));
 					state = if before_function_pos == end_function_pos {
 						State::WaitingForCloseBracket
@@ -716,7 +716,7 @@ pub fn process<T: Read + Seek>(
 
 						run_function(
 							input_file,
-							&mut output_buf,
+							output_buf,
 							&queued_identifiers,
 							&mut outer_variables,
 							&mut cf_stack,
@@ -1023,7 +1023,7 @@ fn fetch_template_value(
 
 	{
 		let numeric_offset = if name.starts_with('-') { 1 } else { 0 };
-		if name[numeric_offset..].chars().all(|c| c.is_digit(10)) {
+		if name[numeric_offset..].chars().all(|c| c.is_ascii_digit()) {
 			return Value::Integer(name.parse::<i32>().unwrap_or_else(|e| {
 				panic!("Failed converting {} to an i32: {}", name, e)
 			}));
@@ -1261,7 +1261,7 @@ fn fetch_value(
 
 fn run_function<T: Read + Seek>(
 	input_file: &mut BufReader<T>,
-	mut output_buf: &mut BufWriter<Vec<u8>>,
+	output_buf: &mut BufWriter<Vec<u8>>,
 	identifiers: &[String],
 	outer_variables: &mut HashMap<String, Value>,
 	cf_stack: &mut Vec<ControlFlow>,
@@ -1298,7 +1298,7 @@ fn run_function<T: Read + Seek>(
 		),
 		"endfor" => end_for(input_file, parameters, cf_stack),
 		"include" => include_file(
-			&mut output_buf,
+			output_buf,
 			parameters,
 			outer_variables,
 			cf_stack,
@@ -1307,7 +1307,7 @@ fn run_function<T: Read + Seek>(
 		),
 		"link" => check_and_emit_link(
 			context.output_file_path,
-			&mut output_buf,
+			output_buf,
 			parameters,
 			outer_variables,
 			cf_stack,
@@ -1654,7 +1654,7 @@ fn start_for<T: Read + Seek>(
 	// started the ending of the current for-tag so that it gets re-read when
 	// seeking back, making the state machine function properly.
 	let buffer_start_position =
-		input_file.seek(SeekFrom::Current(0)).unwrap_or_else(|e| {
+		input_file.stream_position().unwrap_or_else(|e| {
 			panic!("Failed fetching current position from input stream: {}", e)
 		}) - 1;
 
@@ -1718,7 +1718,7 @@ fn end_for<T: Read + Seek>(
 }
 
 fn include_file(
-	mut output_buf: &mut BufWriter<Vec<u8>>,
+	output_buf: &mut BufWriter<Vec<u8>>,
 	parameters: &[String],
 	outer_variables: &mut HashMap<String, Value>,
 	cf_stack: &mut Vec<ControlFlow>,
@@ -1771,7 +1771,7 @@ fn include_file(
 
 	process(
 		&mut included_file,
-		&mut output_buf,
+		output_buf,
 		outer_variables_for_include,
 		&Context {
 			input_file_path: &included_file_path,
@@ -1866,7 +1866,7 @@ fn make_relative_link(
 		equal_prefix = equal_prefix.join(self_component);
 		equal_component_count += 1;
 	}
-	if equal_prefix.iter().next() == None {
+	if equal_prefix.iter().next().is_none() {
 		panic!("No common prefix, expected at least {} but own path is {} and link is {}.", root_output_dir.display(), output_file_path.display(), linked_output_path.display());
 	}
 
